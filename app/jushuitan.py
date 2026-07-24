@@ -7,7 +7,7 @@
 签名规则必须与开放平台“数字签名”文档保持一致，不能凭经验猜测。
 """
 from collections import defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from itertools import islice
 import hashlib
@@ -68,11 +68,19 @@ async def _post(client: httpx.AsyncClient, url: str, body: dict) -> dict:
 async def _purchase_rows(client: httpx.AsyncClient) -> list[dict]:
     rows: list[dict] = []
     page = 1
+    modified_end = datetime.now()
+    modified_begin = modified_end - timedelta(days=7)
     while True:
         data = await _post(
             client,
             settings.jst_purchase_api_url,
-            {"page_index": page, "page_size": 50, "statuss": ACTIVE_PURCHASE_STATUSES},
+            {
+                "page_index": page,
+                "page_size": 50,
+                "modified_begin": modified_begin.strftime("%Y-%m-%d %H:%M:%S"),
+                "modified_end": modified_end.strftime("%Y-%m-%d %H:%M:%S"),
+                "statuss": ACTIVE_PURCHASE_STATUSES,
+            },
         )
         rows.extend(data.get("datas") or [])
         if not data.get("has_next"):

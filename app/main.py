@@ -1,10 +1,12 @@
 from contextlib import asynccontextmanager
 from html import escape
+import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI, Form, Header, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 from .config import settings
+from .feishu import send_message
 from .service import run_check
 from .storage import (
     buyer_by_token,
@@ -46,6 +48,11 @@ class BuyerInput(BaseModel):
     feishu_open_id: str
 
 
+class FeishuTestInput(BaseModel):
+    feishu_open_id: str
+    message: str = "采购交期预警服务已成功上线，飞书通知通道测试正常。"
+
+
 def require_admin(token: str | None):
     if token != settings.app_admin_token:
         raise HTTPException(401, "管理员令牌错误")
@@ -71,6 +78,22 @@ def add_buyer(body: BuyerInput, x_admin_token: str | None = Header(None)):
 async def manual_run(x_admin_token: str | None = Header(None)):
     require_admin(x_admin_token)
     return await run_check()
+
+
+@app.post("/admin/test-feishu")
+async def test_feishu(
+    body: FeishuTestInput, x_admin_token: str | None = Header(None)
+):
+    require_admin(x_admin_token)
+    try:
+        await send_message(
+            body.feishu_open_id.strip(),
+            "采购交期预警 · 上线测试",
+            body.message.strip(),
+        )
+    except (httpx.HTTPError, RuntimeError) as exc:
+        raise HTTPException(502, f"飞书测试发送失败：{exc}") from exc
+    return {"ok": True, "message": "测试消息已发送"}
 
 
 def notification_page(token: str, buyer, closed: list[str]) -> HTMLResponse:
