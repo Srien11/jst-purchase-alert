@@ -44,7 +44,7 @@ class LogicTests(unittest.TestCase):
         rows = build_alerts(
             [
                 self.order("OVERDUE", 2),
-                self.order("CURRENT", 6),
+                self.order("CURRENT", 11),
                 self.order("FAR-FUTURE", 16),
             ],
             date(2026, 7, 24), "小王", 3

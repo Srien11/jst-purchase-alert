@@ -218,10 +218,11 @@ def _active_rows(db, buyer, orders):
 
 def _current_in_transit(rows):
     warning_days = getattr(settings, "warning_day_values", (12, 7, 3))
+    warning_window = max(warning_days)
     return [
         row
         for row in rows
-        if row.effective_days_left in warning_days
+        if 0 <= row.effective_days_left <= warning_window
     ]
 
 
