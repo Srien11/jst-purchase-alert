@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from html import escape
+import json
 import httpx
 from urllib.parse import quote
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -7,9 +8,9 @@ from fastapi import Cookie, FastAPI, Form, Header, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 from .config import settings
-from .feishu import oauth_user, send_admin_message, send_message
-from .jushuitan import fetch_orders, fetch_purchasers
-from .matching import normalize_person_name, unique_purchaser_match
+from .feishu import oauth_user, send_message
+from .jushuitan import fetch_purchasers
+from .matching import normalize_person_name
 from .review import review_signature, valid_review_signature
 from .service import (
     run_check,
@@ -19,20 +20,18 @@ from .service import (
 )
 from .storage import (
     active_buyers,
+    buyer_by_open_id,
     buyer_by_token,
     claim_system_event,
     close_alert,
     closed_order_numbers,
     connect,
     consume_oauth_state,
-    create_join_request,
-    create_join_session,
     create_oauth_state,
     enable_by_token,
     finish_system_event,
     approve_join_request,
     join_request_by_id,
-    join_session,
     pending_join_requests,
     reject_join_request,
     reopen_alert,
@@ -143,123 +142,21 @@ async def join_callback(code: str, state: str):
         name = str(user.get("name") or "").strip()
         if not open_id or not name:
             raise HTTPException(400, "飞书未返回有效用户身份")
-        token = create_join_session(db, open_id, name)
+        authorized = buyer_by_open_id(db, open_id)
     finally:
         db.close()
-    if is_procurement_manager(name):
-        manager_name = next(
-            manager
-            for manager in PROCUREMENT_MANAGERS
-            if normalize_person_name(manager) == normalize_person_name(name)
-        )
+    if authorized:
+        token = authorized["token"]
         db = connect(settings.database_path)
         try:
-            manage_token = upsert_buyer(
-                db, manager_name, open_id, is_manager=True
-            )
-            set_buyer_enabled(db, manage_token, True)
+            set_buyer_enabled(db, token, True)
         finally:
             db.close()
         return remember_buyer(
-            RedirectResponse(
-                public_url(f"/subscribe/{manage_token}"), status_code=303
-            ),
-            manage_token,
+            RedirectResponse(public_url(f"/subscribe/{token}"), status_code=303),
+            token,
         )
-    try:
-        orders = await fetch_orders()
-    except Exception as exc:
-        raise HTTPException(502, f"读取采购员列表失败：{exc}") from exc
-    purchasers = sorted(
-        {o.purchaser for o in orders if o.purchaser} | PROCUREMENT_MANAGERS
-    )
-    exact = unique_purchaser_match(name, purchasers)
-    options = "".join(
-        f'<option value="{escape(p)}"{" selected" if p == exact else ""}>{escape(p)}</option>'
-        for p in purchasers
-    )
-    hint = (
-        "姓名已与聚水潭采购员匹配，确认后立即开通。"
-        if exact
-        else "未找到同名采购员，请选择对应姓名；提交后由管理员审核。"
-    )
-    return HTMLResponse(
-        f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>开通采购预警</title><style>
-body{{font-family:"PingFang SC","Microsoft YaHei",sans-serif;background:#f4f7fb;color:#172033}}
-.card{{max-width:560px;margin:8vh auto;background:white;border-radius:22px;padding:30px;
-box-shadow:0 18px 60px #29476818}}h1{{margin-top:0}}label{{display:block;margin:22px 0 8px}}
-select,button{{width:100%;padding:13px;border-radius:12px;font-size:16px}}
-select{{border:1px solid #dce3ed;background:white}}button{{margin-top:20px;border:0;
-background:#1677ff;color:white;font-weight:700}}p{{color:#607087;line-height:1.7}}</style>
-</head><body><main class="card"><h1>开通采购交期预警</h1>
-<p>飞书用户：<strong>{escape(name)}</strong></p><p>{escape(hint)}</p>
-<form method="post" action="{public_url('/join/confirm')}">
-<input type="hidden" name="token" value="{escape(token)}">
-<label>聚水潭采购员</label><select name="purchaser" required>{options}</select>
-<button>确认开通</button></form></main></body></html>"""
-    )
-
-
-@app.post("/join/confirm", response_class=HTMLResponse)
-async def join_confirm(token: str = Form(...), purchaser: str = Form(...)):
-    try:
-        purchasers = (
-            {o.purchaser for o in await fetch_orders() if o.purchaser}
-            | PROCUREMENT_MANAGERS
-        )
-    except Exception as exc:
-        raise HTTPException(502, f"读取采购员列表失败：{exc}") from exc
-    if purchaser not in purchasers:
-        raise HTTPException(400, "采购员不存在或当前不可用")
-    db = connect(settings.database_path)
-    try:
-        session = join_session(db, token)
-        if not session:
-            raise HTTPException(400, "确认页面已过期，请重新开通")
-        automatic_match = unique_purchaser_match(
-            session["feishu_name"], purchasers
-        )
-        if automatic_match == purchaser:
-            manage_token = upsert_buyer(
-                db,
-                purchaser,
-                session["open_id"],
-                is_manager=is_procurement_manager(purchaser),
-            )
-            set_buyer_enabled(db, manage_token, True)
-            return remember_buyer(
-                RedirectResponse(
-                    public_url(f"/subscribe/{manage_token}"), status_code=303
-                ),
-                manage_token,
-            )
-        request_id = create_join_request(
-            db, session["open_id"], session["feishu_name"], purchaser
-        )
-    finally:
-        db.close()
-    if settings.feishu_admin_open_id or settings.feishu_admin_mobile:
-        try:
-            review_url = public_url(
-                f"/admin/review/{request_id}?sig="
-                f"{review_signature(request_id, settings.app_admin_token)}"
-            )
-            await send_admin_message(
-                "采购预警开通申请待审核",
-                (
-                    f"申请编号：{request_id}\n"
-                    f"飞书姓名：{session['feishu_name']}\n"
-                    f"申请采购员：{purchaser}\n"
-                    f"姓名无法安全自动匹配，请管理员审核。\n{review_url}"
-                ),
-            )
-        except (httpx.HTTPError, RuntimeError):
-            pass
-    return HTMLResponse(
-        f"<h2>申请已提交</h2><p>申请编号：{request_id}。姓名不一致，管理员审核后生效。</p>"
-    )
+    raise HTTPException(403, "当前飞书账号尚未授权，请联系管理员绑定采购身份")
 
 
 @app.post("/admin/buyers")
@@ -488,8 +385,51 @@ def notification_page(token: str, buyer, closed: list[str]) -> HTMLResponse:
         <button class="small secondary">恢复</button></form></li>"""
         for order_no in closed
     ) or '<li class="empty">暂无单独关闭的采购单</li>'
+    weekday_style = "" if frequency == "weekly" else ' style="display:none"'
+    schedule_title = "团队定时推送" if buyer["is_manager"] else "个人推送时间"
+    schedule_target = (
+        f"""<div class="field"><label>推送范围</label>
+        <select id="schedule-purchaser" name="purchaser">
+        <option value="*">全部采购员</option><option disabled>正在读取聚水潭人员…</option>
+        </select></div>"""
+        if buyer["is_manager"] else ""
+    )
+    schedule_panel = f"""
+<section class="card"><h2>{schedule_title}</h2>
+<form class="schedule-form{' manager-schedule-form' if buyer['is_manager'] else ''}"
+method="post" action="{public_url(f'/subscribe/{token}/schedule')}">
+{schedule_target}
+<div class="field"><label>频率</label><select id="schedule-frequency" name="frequency">{frequency_options}</select></div>
+<div class="field"><label>推送时间</label><input type="time" name="schedule_time" value="{schedule_time}" required></div>
+<div id="weekday-field" class="field"{weekday_style}><label>每周日期</label><select name="weekday">{weekday_options}</select></div>
+<button>保存设置</button></form>
+<p class="help">{'负责人定时收到所选采购员或全团队的 0–15 天在途数据。' if buyer['is_manager'] else '时间使用北京时间。'}</p></section>
+<script>
+const frequencySelect=document.getElementById("schedule-frequency");
+const weekdayField=document.getElementById("weekday-field");
+function toggleWeekday() {{
+  weekdayField.style.display=frequencySelect.value==="weekly" ? "" : "none";
+}}
+frequencySelect.addEventListener("change", toggleWeekday);
+toggleWeekday();
+</script>"""
+    personal_panels = ""
+    if not buyer["is_manager"]:
+        personal_panels = f"""
+<section class="card"><h2>立即获取在途数据</h2>
+<div class="manual"><p class="help">实时读取你名下有效剩余 0–15 天且尚未全部入库的明细：0–6 天红色、7–10 天黄色、11–15 天绿色。</p>
+<form method="post" action="{public_url(f'/subscribe/{token}/fetch-now')}">
+<button onclick="this.disabled=true;this.form.submit()">立即发送给我</button></form></div></section>
+<section class="card"><h2>单据通知管理</h2>
+<form class="close-form" method="post" action="{public_url(f'/subscribe/{token}/orders/close')}">
+<input name="order_no" required placeholder="输入采购单号，例如 PO-20260701">
+<button class="secondary">关闭该单预警</button></form>
+<ul>{order_items}</ul></section>"""
     manager_panel = ""
     if buyer["is_manager"]:
+        selected_schedule_purchaser = json.dumps(
+            buyer["schedule_purchaser"], ensure_ascii=False
+        )
         manager_panel = f"""
 <section class="card manager-card"><div class="eyebrow">TEAM ACCESS</div>
 <h2>采购团队数据</h2>
@@ -504,11 +444,16 @@ def notification_page(token: str, buyer, closed: list[str]) -> HTMLResponse:
 fetch("{public_url(f'/subscribe/{token}/manager/purchasers')}")
 .then(response => {{if(!response.ok) throw new Error(); return response.json()}})
 .then(data => {{
-  const select=document.getElementById("team-purchaser");
-  select.innerHTML='<option value="*">全部采购员</option>';
-  data.purchasers.forEach(name => {{
-    const option=document.createElement("option");
-    option.value=name; option.textContent=name; select.appendChild(option);
+  const saved={selected_schedule_purchaser};
+  ["team-purchaser","schedule-purchaser"].forEach(id => {{
+    const select=document.getElementById(id);
+    select.innerHTML='<option value="*">全部采购员</option>';
+    data.purchasers.forEach(name => {{
+      const option=document.createElement("option");
+      option.value=name; option.textContent=name; select.appendChild(option);
+    }});
+    if(id==="schedule-purchaser" &&
+       [...select.options].some(option => option.value===saved)) select.value=saved;
   }});
   document.getElementById("team-load-status").textContent=
     `已读取 ${{data.purchasers.length}} 位聚水潭采购员`;
@@ -542,6 +487,7 @@ cursor:pointer}} button.danger{{background:#fff0f0;color:#d93f46}} button.second
  h2{{font-size:18px;margin:0 0 14px}} .close-form{{display:flex;gap:10px;margin:12px 0 18px}}
  input,select{{min-width:0;flex:1;border:1px solid #dce3ed;border-radius:12px;padding:12px 14px;font-size:15px;background:white}}
  .schedule-form{{display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:10px;align-items:end}}
+ .manager-schedule-form{{grid-template-columns:1.2fr 1fr 1fr 1fr auto}}
  .manager-form{{display:grid;grid-template-columns:1fr auto;gap:10px}}
  .manager-card{{border:1px solid #d9e9ff;background:linear-gradient(145deg,#fff,#f2f8ff)}}
  .field label{{display:block;color:#607087;font-size:13px;margin-bottom:6px}} .manual{{display:flex;gap:14px;align-items:center}}
@@ -555,29 +501,15 @@ padding:13px 4px;border-top:1px solid #edf0f4}} li span{{display:block;color:#87
 <section class="card"><div class="eyebrow">NOTIFICATION CENTER</div>
 <h1>通知中心</h1><p class="who">采购员：<strong>{purchaser}</strong></p>
 <div class="status {status_class}"><div><span class="dot"></span><strong>{status_text}</strong>
-<div class="help">按你的个人时间检查；扣除 3 天运输缓冲，在剩余 12 / 7 / 3 天时提醒。</div></div>
+<div class="help">按你的个人时间检查；扣除 3 天运输缓冲，在剩余 15 / 10 / 6 天时提醒。</div></div>
 <form method="post" action="{public_url(f'/subscribe/{token}/notifications/{action}')}">
 <button class="{'danger' if enabled else ''}"{action_confirm}>{action_text}</button></form></div>
 <p class="help">关闭后，此后再开启前不接收任何提醒，系统重启或次日检查也不会自动恢复。
 首次开启即表示确认订阅；没有命中预警时不发送飞书消息，节假日照常检查。</p>
 </section>
-<section class="card"><h2>个人推送时间</h2>
-<form class="schedule-form" method="post" action="{public_url(f'/subscribe/{token}/schedule')}">
-<div class="field"><label>频率</label><select name="frequency">{frequency_options}</select></div>
-<div class="field"><label>推送时间</label><input type="time" name="schedule_time" value="{schedule_time}" required></div>
-<div class="field"><label>每周日期（仅每周一次生效）</label><select name="weekday">{weekday_options}</select></div>
-<button>保存设置</button></form>
-<p class="help">每天与工作日模式忽略“每周日期”。时间使用北京时间。</p></section>
-<section class="card"><h2>立即获取在途数据</h2>
-<div class="manual"><p class="help">实时读取你名下有效剩余 0–12 天且尚未全部入库的明细，并按 12 / 7 / 3 天分层。</p>
-<form method="post" action="{public_url(f'/subscribe/{token}/fetch-now')}">
-<button onclick="this.disabled=true;this.form.submit()">立即发送给我</button></form></div></section>
+{schedule_panel}
 {manager_panel}
-<section class="card"><h2>单据通知管理</h2>
-<form class="close-form" method="post" action="{public_url(f'/subscribe/{token}/orders/close')}">
-<input name="order_no" required placeholder="输入采购单号，例如 PO-20260701">
-<button class="secondary">关闭该单预警</button></form>
-<ul>{order_items}</ul></section></main></body></html>""", headers={
+{personal_panels}</main></body></html>""", headers={
         "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
         "Pragma": "no-cache",
     })
@@ -611,11 +543,12 @@ def toggle_subscription(token: str, action: str):
 
 
 @app.post("/subscribe/{token}/schedule")
-def save_schedule(
+async def save_schedule(
     token: str,
     frequency: str = Form(...),
     schedule_time: str = Form(...),
     weekday: int = Form(0),
+    purchaser: str = Form("*"),
 ):
     if frequency not in {"daily", "weekdays", "weekly"} or weekday not in range(7):
         raise HTTPException(400, "推送频率设置无效")
@@ -628,9 +561,25 @@ def save_schedule(
         raise HTTPException(400, "推送时间无效")
     db = connect(settings.database_path)
     try:
-        if not buyer_by_token(db, token):
+        buyer = buyer_by_token(db, token)
+        if not buyer:
             raise HTTPException(404, "链接无效")
-        update_buyer_schedule(db, token, frequency, hour, minute, weekday)
+    finally:
+        db.close()
+    schedule_purchaser = "*"
+    if buyer["is_manager"]:
+        try:
+            available = await fetch_purchasers()
+        except (httpx.HTTPError, RuntimeError) as exc:
+            raise HTTPException(502, f"采购员列表读取失败：{exc}") from exc
+        if purchaser != "*" and purchaser not in available:
+            raise HTTPException(400, "定时推送筛选的采购员不存在")
+        schedule_purchaser = purchaser
+    db = connect(settings.database_path)
+    try:
+        update_buyer_schedule(
+            db, token, frequency, hour, minute, weekday, schedule_purchaser
+        )
     finally:
         db.close()
     return RedirectResponse(public_url(f"/subscribe/{token}"), status_code=303)

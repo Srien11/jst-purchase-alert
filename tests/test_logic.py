@@ -22,30 +22,35 @@ class LogicTests(unittest.TestCase):
 
     def test_transport_buffer_and_levels(self):
         rows = build_alerts(
-            [self.order("A", 15), self.order("B", 10), self.order("C", 6)],
+            [
+                self.order("GREEN", 18),
+                self.order("YELLOW", 13),
+                self.order("RED", 9),
+            ],
             date(2026, 7, 24), "小王", 3
         )
         by_no = {r.order.order_no: r for r in rows}
-        self.assertEqual(by_no["A"].effective_days_left, 12)
-        self.assertEqual(by_no["B"].level, "黄")
-        self.assertEqual(by_no["C"].level, "红")
+        self.assertEqual(by_no["GREEN"].effective_days_left, 15)
+        self.assertEqual(by_no["GREEN"].level, "绿")
+        self.assertEqual(by_no["YELLOW"].level, "黄")
+        self.assertEqual(by_no["RED"].level, "红")
 
     def test_warning_days(self):
         rows = build_alerts(
-            [self.order("A", 15), self.order("B", 10), self.order("C", 6)],
+            [self.order("A", 18), self.order("B", 13), self.order("C", 9)],
             date(2026, 7, 24), "小王", 3
         )
         self.assertEqual(
-            {r.effective_days_left for r in due_warning(rows, (12, 7, 3))},
-            {12, 7, 3},
+            {r.effective_days_left for r in due_warning(rows, (15, 10, 6))},
+            {15, 10, 6},
         )
 
-    def test_manual_in_transit_excludes_negative_days(self):
+    def test_alerts_exclude_days_outside_zero_to_fifteen(self):
         rows = build_alerts(
             [
                 self.order("OVERDUE", 2),
                 self.order("CURRENT", 11),
-                self.order("FAR-FUTURE", 16),
+                self.order("FAR-FUTURE", 19),
             ],
             date(2026, 7, 24), "小王", 3
         )
@@ -53,6 +58,26 @@ class LogicTests(unittest.TestCase):
             [row.order.order_no for row in _current_in_transit(rows)],
             ["CURRENT"],
         )
+
+    def test_level_boundaries_are_non_overlapping(self):
+        rows = build_alerts(
+            [
+                self.order("ZERO", 3),
+                self.order("SIX", 9),
+                self.order("SEVEN", 10),
+                self.order("TEN", 13),
+                self.order("ELEVEN", 14),
+                self.order("FIFTEEN", 18),
+            ],
+            date(2026, 7, 24), "小王", 3,
+        )
+        levels = {row.order.order_no: row.level for row in rows}
+        self.assertEqual(levels["ZERO"], "红")
+        self.assertEqual(levels["SIX"], "红")
+        self.assertEqual(levels["SEVEN"], "黄")
+        self.assertEqual(levels["TEN"], "黄")
+        self.assertEqual(levels["ELEVEN"], "绿")
+        self.assertEqual(levels["FIFTEEN"], "绿")
 
     def test_received_summary(self):
         rows = build_alerts(

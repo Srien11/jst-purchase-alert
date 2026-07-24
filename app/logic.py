@@ -2,15 +2,18 @@ from datetime import date
 from decimal import Decimal
 from .models import AlertRow, PurchaseOrder
 
+MIN_EFFECTIVE_DAYS = 0
+MAX_EFFECTIVE_DAYS = 15
+
 
 def classify(order: PurchaseOrder, today: date, travel_buffer_days: int) -> AlertRow:
     calendar_days = (order.delivery_date - today).days
     effective_days = calendar_days - travel_buffer_days
     if order.is_received:
         level, advice = "绿", "已全部入库，无需跟进"
-    elif effective_days <= 3:
+    elif effective_days <= 6:
         level, advice = "红", "立即联系供应商，确认发货/到货时间并准备异常升级"
-    elif effective_days <= 7:
+    elif effective_days <= 10:
         level, advice = "黄", "今日确认生产与物流节点，锁定预计到仓时间"
     else:
         level, advice = "绿", "保持常规跟踪，临近下一预警节点前复核"
@@ -20,7 +23,16 @@ def classify(order: PurchaseOrder, today: date, travel_buffer_days: int) -> Aler
 def build_alerts(
     orders: list[PurchaseOrder], today: date, purchaser: str, travel_buffer_days: int
 ) -> list[AlertRow]:
-    rows = [classify(o, today, travel_buffer_days) for o in orders if o.purchaser == purchaser]
+    rows = [
+        classify(o, today, travel_buffer_days)
+        for o in orders
+        if (
+            o.purchaser == purchaser
+            and MIN_EFFECTIVE_DAYS
+            <= (o.delivery_date - today).days - travel_buffer_days
+            <= MAX_EFFECTIVE_DAYS
+        )
+    ]
     return sorted(
         rows,
         key=lambda r: (
@@ -52,4 +64,3 @@ def due_warning(rows: list[AlertRow], warning_days: tuple[int, ...]) -> list[Ale
         r for r in rows
         if not r.order.is_received and r.effective_days_left in warning_days
     ]
-

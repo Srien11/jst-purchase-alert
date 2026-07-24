@@ -6,6 +6,7 @@ from app.storage import (
     closed_order_numbers,
     connect,
     active_buyers,
+    buyer_by_open_id,
     buyer_by_token,
     claim_system_event,
     finish_system_event,
@@ -47,6 +48,18 @@ class StorageTests(unittest.TestCase):
             finally:
                 db.close()
 
+    def test_authorized_buyer_can_be_found_by_feishu_open_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = connect(str(Path(tmp) / "authorization.db"))
+            try:
+                token = upsert_buyer(db, "采购员甲", "ou_authorized")
+                buyer = buyer_by_open_id(db, "ou_authorized")
+                self.assertEqual(buyer["token"], token)
+                self.assertEqual(buyer["purchaser"], "采购员甲")
+                self.assertIsNone(buyer_by_open_id(db, "ou_unknown"))
+            finally:
+                db.close()
+
     def test_manager_role_is_persisted_and_cannot_be_downgraded(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = connect(str(Path(tmp) / "manager.db"))
@@ -83,7 +96,9 @@ class StorageTests(unittest.TestCase):
                 buyer = buyer_by_token(db, token)
                 self.assertEqual(buyer["schedule_frequency"], "daily")
                 self.assertEqual((buyer["schedule_hour"], buyer["schedule_minute"]), (9, 0))
-                update_buyer_schedule(db, token, "weekly", 14, 30, 4)
+                update_buyer_schedule(
+                    db, token, "weekly", 14, 30, 4, "采购员乙"
+                )
                 buyer = buyer_by_token(db, token)
                 self.assertEqual(
                     (
@@ -91,8 +106,9 @@ class StorageTests(unittest.TestCase):
                         buyer["schedule_hour"],
                         buyer["schedule_minute"],
                         buyer["schedule_weekday"],
+                        buyer["schedule_purchaser"],
                     ),
-                    ("weekly", 14, 30, 4),
+                    ("weekly", 14, 30, 4, "采购员乙"),
                 )
                 mark_schedule_slot(db, token, "2026-07-24T14:30")
                 self.assertEqual(

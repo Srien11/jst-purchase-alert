@@ -2,7 +2,7 @@ from datetime import date, datetime
 from .config import settings
 from .feishu import send_card, send_message
 from .jushuitan import fetch_orders
-from .logic import build_alerts, due_warning, summary
+from .logic import MAX_EFFECTIVE_DAYS, MIN_EFFECTIVE_DAYS, build_alerts, due_warning, summary
 from .storage import (
     active_buyers,
     buyer_by_token,
@@ -217,12 +217,10 @@ def _active_rows(db, buyer, orders):
 
 
 def _current_in_transit(rows):
-    warning_days = getattr(settings, "warning_day_values", (12, 7, 3))
-    warning_window = max(warning_days)
     return [
         row
         for row in rows
-        if 0 <= row.effective_days_left <= warning_window
+        if MIN_EFFECTIVE_DAYS <= row.effective_days_left <= MAX_EFFECTIVE_DAYS
     ]
 
 
@@ -314,7 +312,20 @@ async def run_scheduled_checks(now: datetime | None = None) -> dict:
     if not due_buyers:
         return {"buyers": 0, "messages": 0, "orders": 0}
     orders = await fetch_orders()
-    result = await _run_for_buyers(due_buyers, orders)
+    personal_buyers = [buyer for buyer in due_buyers if not buyer["is_manager"]]
+    manager_buyers = [buyer for buyer in due_buyers if buyer["is_manager"]]
+    result = (
+        await _run_for_buyers(personal_buyers, orders)
+        if personal_buyers
+        else {"buyers": 0, "messages": 0, "orders": 0}
+    )
+    for manager in manager_buyers:
+        manager_result = await send_manager_report(
+            manager["token"], manager["schedule_purchaser"], orders=orders
+        )
+        result["buyers"] += manager_result["buyers"]
+        result["messages"] += manager_result["messages"]
+        result["orders"] += manager_result["orders"]
     db = connect(settings.database_path)
     try:
         for buyer in due_buyers:
@@ -350,8 +361,11 @@ async def send_manual_report(token: str) -> dict:
     }
 
 
-async def send_manager_report(token: str, purchaser: str = "*") -> dict:
-    orders = await fetch_orders()
+async def send_manager_report(
+    token: str, purchaser: str = "*", orders=None
+) -> dict:
+    if orders is None:
+        orders = await fetch_orders()
     db = connect(settings.database_path)
     try:
         row = buyer_by_token(db, token)

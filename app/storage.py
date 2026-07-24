@@ -65,6 +65,7 @@ def connect(path: str) -> sqlite3.Connection:
         "schedule_weekday": "INTEGER NOT NULL DEFAULT 0",
         "last_schedule_slot": "TEXT NOT NULL DEFAULT ''",
         "is_manager": "INTEGER NOT NULL DEFAULT 0",
+        "schedule_purchaser": "TEXT NOT NULL DEFAULT '*'",
     }
     for name, definition in migrations.items():
         if name not in columns:
@@ -121,12 +122,14 @@ def update_buyer_schedule(
     hour: int,
     minute: int,
     weekday: int,
+    purchaser: str = "*",
 ):
     db.execute(
         """UPDATE buyers SET schedule_frequency=?, schedule_hour=?,
-           schedule_minute=?, schedule_weekday=?, last_schedule_slot=''
+           schedule_minute=?, schedule_weekday=?, schedule_purchaser=?,
+           last_schedule_slot=''
            WHERE token=?""",
-        (frequency, hour, minute, weekday, token),
+        (frequency, hour, minute, weekday, purchaser, token),
     )
     db.commit()
 
@@ -165,6 +168,12 @@ def finish_system_event(db: sqlite3.Connection, event_key: str, detail: str):
 
 def buyer_by_token(db: sqlite3.Connection, token: str):
     return db.execute("SELECT * FROM buyers WHERE token=?", (token,)).fetchone()
+
+
+def buyer_by_open_id(db: sqlite3.Connection, open_id: str):
+    return db.execute(
+        "SELECT * FROM buyers WHERE feishu_open_id=?", (open_id,)
+    ).fetchone()
 
 
 def close_alert(db: sqlite3.Connection, order_no: str, purchaser: str):

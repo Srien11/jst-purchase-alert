@@ -27,19 +27,21 @@ class MainRouteTests(unittest.TestCase):
             '@app.get("/subscribe/{token}/manager/purchasers")', source
         )
         self.assertIn("purchasers = await fetch_purchasers()", source)
+        self.assertIn('id="schedule-purchaser"', source)
+        self.assertIn("负责人定时收到所选采购员或全团队", source)
+        self.assertIn(
+            'frequencySelect.value==="weekly" ? "" : "none"', source
+        )
 
-    def test_manager_can_join_without_jushuitan_purchaser_record(self):
+    def test_login_uses_authorized_binding_without_purchaser_selection(self):
         source = (Path(__file__).parents[1] / "app" / "main.py").read_text(
             encoding="utf-8"
         )
-        self.assertIn(
-            "{o.purchaser for o in orders if o.purchaser} | PROCUREMENT_MANAGERS",
-            source,
-        )
-        self.assertLess(
-            source.index("if is_procurement_manager(name):"),
-            source.index("orders = await fetch_orders()"),
-        )
+        self.assertIn("authorized = buyer_by_open_id(db, open_id)", source)
+        self.assertIn("当前飞书账号尚未授权", source)
+        self.assertNotIn('name="purchaser" required', source)
+        self.assertNotIn('@app.post("/join/confirm"', source)
+        self.assertNotIn("if is_procurement_manager(name):", source)
         self.assertIn('"刘智博&木耳"', source)
 
     def test_bound_browser_skips_repeated_oauth(self):
