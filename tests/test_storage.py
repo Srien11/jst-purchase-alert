@@ -7,8 +7,11 @@ from app.storage import (
     connect,
     active_buyers,
     buyer_by_token,
+    claim_system_event,
+    finish_system_event,
     reopen_alert,
     set_buyer_enabled,
+    system_event,
     upsert_buyer,
 )
 
@@ -39,6 +42,19 @@ class StorageTests(unittest.TestCase):
                 set_buyer_enabled(db, token, False)
                 self.assertEqual(len(active_buyers(db)), 0)
                 self.assertEqual(buyer_by_token(db, token)["enabled"], 0)
+            finally:
+                db.close()
+
+    def test_one_time_system_event_cannot_be_claimed_twice(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = connect(str(Path(tmp) / "events.db"))
+            try:
+                self.assertTrue(claim_system_event(db, "test-once"))
+                self.assertFalse(claim_system_event(db, "test-once"))
+                finish_system_event(db, "test-once", "成功 1/1")
+                event = system_event(db, "test-once")
+                self.assertEqual(event["status"], "completed")
+                self.assertEqual(event["detail"], "成功 1/1")
             finally:
                 db.close()
 

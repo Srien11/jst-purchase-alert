@@ -48,6 +48,13 @@ def connect(path: str) -> sqlite3.Connection:
           status TEXT NOT NULL DEFAULT 'pending',
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS system_events (
+          event_key TEXT PRIMARY KEY,
+          status TEXT NOT NULL,
+          detail TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
         """
     )
     return db
@@ -81,6 +88,31 @@ def set_buyer_enabled(db: sqlite3.Connection, token: str, enabled: bool):
 
 def active_buyers(db: sqlite3.Connection):
     return db.execute("SELECT * FROM buyers WHERE enabled=1 ORDER BY purchaser").fetchall()
+
+
+def system_event(db: sqlite3.Connection, event_key: str):
+    return db.execute(
+        "SELECT * FROM system_events WHERE event_key=?", (event_key,)
+    ).fetchone()
+
+
+def claim_system_event(db: sqlite3.Connection, event_key: str) -> bool:
+    cursor = db.execute(
+        """INSERT OR IGNORE INTO system_events(event_key,status)
+           VALUES(?,'running')""",
+        (event_key,),
+    )
+    db.commit()
+    return cursor.rowcount == 1
+
+
+def finish_system_event(db: sqlite3.Connection, event_key: str, detail: str):
+    db.execute(
+        """UPDATE system_events SET status='completed', detail=?,
+           updated_at=CURRENT_TIMESTAMP WHERE event_key=?""",
+        (detail, event_key),
+    )
+    db.commit()
 
 
 def buyer_by_token(db: sqlite3.Connection, token: str):

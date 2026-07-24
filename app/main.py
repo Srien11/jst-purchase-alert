@@ -13,7 +13,9 @@ from .matching import unique_purchaser_match
 from .review import review_signature, valid_review_signature
 from .service import run_check
 from .storage import (
+    active_buyers,
     buyer_by_token,
+    claim_system_event,
     close_alert,
     closed_order_numbers,
     connect,
@@ -22,6 +24,7 @@ from .storage import (
     create_join_session,
     create_oauth_state,
     enable_by_token,
+    finish_system_event,
     approve_join_request,
     join_request_by_id,
     join_session,
@@ -29,11 +32,13 @@ from .storage import (
     reject_join_request,
     reopen_alert,
     set_buyer_enabled,
+    system_event,
     upsert_buyer,
 )
 
 
 scheduler = AsyncIOScheduler(timezone=settings.timezone)
+ONE_TIME_BOUND_TEST = "bound-buyers-test-v1"
 
 
 @asynccontextmanager
@@ -295,6 +300,74 @@ def reject_join_from_page(request_id: int, sig: str = Form(...)):
 async def manual_run(x_admin_token: str | None = Header(None)):
     require_admin(x_admin_token)
     return await run_check()
+
+
+@app.get("/admin/test-bound-once", response_class=HTMLResponse)
+def test_bound_once_page(sig: str):
+    if not valid_review_signature(0, sig, settings.app_admin_token):
+        raise HTTPException(403, "测试链接无效")
+    db = connect(settings.database_path)
+    try:
+        buyers = active_buyers(db)
+        event = system_event(db, ONE_TIME_BOUND_TEST)
+    finally:
+        db.close()
+    status = (
+        f"已执行：{escape(event['detail'])}"
+        if event
+        else f"尚未执行，将向 {len(buyers)} 位已绑定且已启用的采购员发送测试消息。"
+    )
+    disabled = " disabled" if event else ""
+    action = public_url("/admin/test-bound-once")
+    return HTMLResponse(
+        f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>一次性通知测试</title><style>
+body{{font-family:"PingFang SC","Microsoft YaHei",sans-serif;background:#f4f7fb;color:#172033}}
+.card{{max-width:560px;margin:10vh auto;background:white;border-radius:22px;padding:30px;
+box-shadow:0 18px 60px #29476818}}button{{width:100%;padding:13px;border:0;border-radius:12px;
+color:white;font-weight:700;background:#1677ff}}button:disabled{{background:#aab4c3}}</style></head>
+<body><main class="card"><h1>一次性通知测试</h1><p>{status}</p>
+<form method="post" action="{action}"><input type="hidden" name="sig" value="{escape(sig)}">
+<button{disabled}>确认发送一次</button></form></main></body></html>"""
+    )
+
+
+@app.post("/admin/test-bound-once", response_class=HTMLResponse)
+async def run_test_bound_once(sig: str = Form(...)):
+    if not valid_review_signature(0, sig, settings.app_admin_token):
+        raise HTTPException(403, "测试链接无效")
+    db = connect(settings.database_path)
+    try:
+        if not claim_system_event(db, ONE_TIME_BOUND_TEST):
+            raise HTTPException(409, "一次性测试已经执行，不能重复发送")
+        buyers = [dict(row) for row in active_buyers(db)]
+    finally:
+        db.close()
+    sent = 0
+    failures = []
+    for buyer in buyers:
+        try:
+            await send_message(
+                buyer["feishu_open_id"],
+                "采购交期预警 · 一次性测试",
+                (
+                    f"采购员：{buyer['purchaser']}\n"
+                    "这是一条上线验证消息，不是正式交期预警。"
+                ),
+            )
+            sent += 1
+        except (httpx.HTTPError, RuntimeError) as exc:
+            failures.append(f"{buyer['purchaser']}: {exc}")
+    detail = f"成功 {sent}/{len(buyers)}"
+    if failures:
+        detail += f"，失败 {len(failures)}"
+    db = connect(settings.database_path)
+    try:
+        finish_system_event(db, ONE_TIME_BOUND_TEST, detail)
+    finally:
+        db.close()
+    return HTMLResponse(f"<h2>测试完成</h2><p>{escape(detail)}</p>")
 
 
 @app.post("/admin/test-feishu")
