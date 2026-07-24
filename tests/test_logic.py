@@ -42,7 +42,11 @@ class LogicTests(unittest.TestCase):
 
     def test_manual_in_transit_excludes_negative_days(self):
         rows = build_alerts(
-            [self.order("OVERDUE", 2), self.order("CURRENT", 3)],
+            [
+                self.order("OVERDUE", 2),
+                self.order("CURRENT", 6),
+                self.order("FAR-FUTURE", 16),
+            ],
             date(2026, 7, 24), "小王", 3
         )
         self.assertEqual(

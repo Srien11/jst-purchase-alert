@@ -569,7 +569,7 @@ padding:13px 4px;border-top:1px solid #edf0f4}} li span{{display:block;color:#87
 <button>保存设置</button></form>
 <p class="help">每天与工作日模式忽略“每周日期”。时间使用北京时间。</p></section>
 <section class="card"><h2>立即获取在途数据</h2>
-<div class="manual"><p class="help">实时读取你名下全部未入库明细并发送飞书表格，不影响自动提醒记录。</p>
+<div class="manual"><p class="help">实时读取你名下有效剩余天数正好命中 12 / 7 / 3 天且尚未全部入库的明细。</p>
 <form method="post" action="{public_url(f'/subscribe/{token}/fetch-now')}">
 <button onclick="this.disabled=true;this.form.submit()">立即发送给我</button></form></div></section>
 {manager_panel}

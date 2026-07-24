@@ -217,7 +217,12 @@ def _active_rows(db, buyer, orders):
 
 
 def _current_in_transit(rows):
-    return [row for row in rows if row.effective_days_left >= 0]
+    warning_days = getattr(settings, "warning_day_values", (12, 7, 3))
+    return [
+        row
+        for row in rows
+        if row.effective_days_left in warning_days
+    ]
 
 
 async def _send_rows(buyer, rows) -> int:
