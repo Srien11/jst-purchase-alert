@@ -10,6 +10,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from itertools import islice
+import asyncio
 import hashlib
 import json
 import time
@@ -19,6 +20,10 @@ from .models import PurchaseOrder
 
 
 ACTIVE_PURCHASE_STATUSES = ["Confirmed", "WaitDeliver", "WaitReceive"]
+
+
+def _clean_name(value) -> str:
+    return " ".join(str(value or "").split())
 
 
 def _chunks(values, size):
@@ -57,35 +62,49 @@ def _public_params(body: dict) -> dict:
 
 
 async def _post(client: httpx.AsyncClient, url: str, body: dict) -> dict:
-    response = await client.post(url, data=_public_params(body))
-    response.raise_for_status()
-    payload = response.json()
-    if payload.get("code") not in (0, "0"):
-        raise RuntimeError(f"聚水潭接口失败: {payload.get('code')} {payload.get('msg')}")
-    return payload.get("data") or {}
+    payload = {}
+    for attempt in range(4):
+        response = await client.post(url, data=_public_params(body))
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("code") in (0, "0"):
+            return payload.get("data") or {}
+        if str(payload.get("code")) != "199" or attempt == 3:
+            break
+        await asyncio.sleep(2 ** attempt)
+    raise RuntimeError(f"聚水潭接口失败: {payload.get('code')} {payload.get('msg')}")
 
 
 async def _purchase_rows(client: httpx.AsyncClient) -> list[dict]:
-    rows: list[dict] = []
-    page = 1
+    rows_by_id: dict[str, dict] = {}
     modified_end = datetime.now()
-    modified_begin = modified_end - timedelta(days=7)
-    while True:
-        data = await _post(
-            client,
-            settings.jst_purchase_api_url,
-            {
-                "page_index": page,
-                "page_size": 50,
-                "modified_begin": modified_begin.strftime("%Y-%m-%d %H:%M:%S"),
-                "modified_end": modified_end.strftime("%Y-%m-%d %H:%M:%S"),
-                "statuss": ACTIVE_PURCHASE_STATUSES,
-            },
-        )
-        rows.extend(data.get("datas") or [])
-        if not data.get("has_next"):
-            return rows
-        page += 1
+    overall_begin = modified_end - timedelta(
+        days=settings.jst_purchase_lookback_days
+    )
+    window_begin = overall_begin
+    while window_begin < modified_end:
+        window_end = min(window_begin + timedelta(days=7), modified_end)
+        page = 1
+        while True:
+            data = await _post(
+                client,
+                settings.jst_purchase_api_url,
+                {
+                    "page_index": page,
+                    "page_size": 50,
+                    "modified_begin": window_begin.strftime("%Y-%m-%d %H:%M:%S"),
+                    "modified_end": window_end.strftime("%Y-%m-%d %H:%M:%S"),
+                    "statuss": ACTIVE_PURCHASE_STATUSES,
+                },
+            )
+            for row in data.get("datas") or []:
+                rows_by_id[str(row["po_id"])] = row
+            await asyncio.sleep(settings.jst_request_interval_seconds)
+            if not data.get("has_next"):
+                break
+            page += 1
+        window_begin = window_end
+    return list(rows_by_id.values())
 
 
 async def _received_quantities(
@@ -128,12 +147,14 @@ def _flatten(purchases: list[dict], received) -> list[PurchaseOrder]:
     for purchase in purchases:
         po_id = str(purchase["po_id"])
         for item in purchase.get("items") or []:
+            if not item.get("delivery_date"):
+                continue
             sku_id, item_id = str(item.get("sku_id", "")), str(item.get("i_id", ""))
             key = (po_id, sku_id, item_id)
             result.append(
                 PurchaseOrder(
                     order_no=po_id,
-                    purchaser=str(purchase.get("purchaser_name", "")).strip(),
+                    purchaser=_clean_name(purchase.get("purchaser_name", "")),
                     supplier=str(purchase.get("seller", "")).strip(),
                     delivery_date=_delivery_date(item.get("delivery_date")),
                     ordered_qty=Decimal(str(item.get("qty") or 0)),
@@ -187,3 +208,17 @@ async def fetch_orders() -> list[PurchaseOrder]:
         po_ids = [int(row["po_id"]) for row in purchases]
         received = await _received_quantities(client, po_ids) if po_ids else {}
     return _flatten(purchases, received)
+
+
+async def fetch_purchasers() -> list[str]:
+    if settings.demo_mode:
+        return ["演示采购员"]
+    async with httpx.AsyncClient(timeout=45) as client:
+        purchases = await _purchase_rows(client)
+    return sorted(
+        {
+            _clean_name(row.get("purchaser_name"))
+            for row in purchases
+            if _clean_name(row.get("purchaser_name"))
+        }
+    )

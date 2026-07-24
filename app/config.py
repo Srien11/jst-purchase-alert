@@ -11,8 +11,8 @@ class Settings(BaseSettings):
     timezone: str = "Asia/Shanghai"
     check_hour: int = 9
     check_minute: int = 0
-    travel_buffer_days: int = 3
-    warning_days: str = "12,7,3"
+    travel_buffer_days: int = 0
+    warning_days: str = "15,10,6"
     jst_purchase_api_url: str = "https://openapi.jushuitan.com/open/purchase/query"
     jst_purchase_in_api_url: str = (
         "https://openapi.jushuitan.com/open/webapi/wmsapi/purchasein/purchaseinquery"
@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     jst_app_key: str = ""
     jst_app_secret: str = ""
     jst_access_token: str = ""
+    jst_purchase_lookback_days: int = 180
+    jst_request_interval_seconds: float = 0.4
     feishu_app_id: str = ""
     feishu_app_secret: str = ""
     feishu_admin_open_id: str = ""

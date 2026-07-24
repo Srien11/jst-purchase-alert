@@ -48,19 +48,47 @@ def connect(path: str) -> sqlite3.Connection:
           status TEXT NOT NULL DEFAULT 'pending',
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS system_events (
+          event_key TEXT PRIMARY KEY,
+          status TEXT NOT NULL,
+          detail TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
         """
     )
+    columns = {row["name"] for row in db.execute("PRAGMA table_info(buyers)")}
+    migrations = {
+        "schedule_frequency": "TEXT NOT NULL DEFAULT 'daily'",
+        "schedule_hour": "INTEGER NOT NULL DEFAULT 9",
+        "schedule_minute": "INTEGER NOT NULL DEFAULT 0",
+        "schedule_weekday": "INTEGER NOT NULL DEFAULT 0",
+        "last_schedule_slot": "TEXT NOT NULL DEFAULT ''",
+        "is_manager": "INTEGER NOT NULL DEFAULT 0",
+        "schedule_purchaser": "TEXT NOT NULL DEFAULT '*'",
+    }
+    for name, definition in migrations.items():
+        if name not in columns:
+            db.execute(f"ALTER TABLE buyers ADD COLUMN {name} {definition}")
+    db.commit()
     return db
 
 
-def upsert_buyer(db: sqlite3.Connection, purchaser: str, feishu_open_id: str) -> str:
+def upsert_buyer(
+    db: sqlite3.Connection,
+    purchaser: str,
+    feishu_open_id: str,
+    is_manager: bool = False,
+) -> str:
     row = db.execute("SELECT token FROM buyers WHERE purchaser=?", (purchaser,)).fetchone()
     token = row["token"] if row else secrets.token_urlsafe(24)
     db.execute(
-        """INSERT INTO buyers(purchaser, token, feishu_open_id)
-           VALUES(?,?,?)
-           ON CONFLICT(purchaser) DO UPDATE SET feishu_open_id=excluded.feishu_open_id""",
-        (purchaser, token, feishu_open_id),
+        """INSERT INTO buyers(purchaser, token, feishu_open_id, is_manager)
+           VALUES(?,?,?,?)
+           ON CONFLICT(purchaser) DO UPDATE SET
+             feishu_open_id=excluded.feishu_open_id,
+             is_manager=MAX(buyers.is_manager, excluded.is_manager)""",
+        (purchaser, token, feishu_open_id, int(is_manager)),
     )
     db.commit()
     return token
@@ -83,8 +111,69 @@ def active_buyers(db: sqlite3.Connection):
     return db.execute("SELECT * FROM buyers WHERE enabled=1 ORDER BY purchaser").fetchall()
 
 
+def all_buyers(db: sqlite3.Connection):
+    return db.execute("SELECT * FROM buyers ORDER BY purchaser").fetchall()
+
+
+def update_buyer_schedule(
+    db: sqlite3.Connection,
+    token: str,
+    frequency: str,
+    hour: int,
+    minute: int,
+    weekday: int,
+    purchaser: str = "*",
+):
+    db.execute(
+        """UPDATE buyers SET schedule_frequency=?, schedule_hour=?,
+           schedule_minute=?, schedule_weekday=?, schedule_purchaser=?,
+           last_schedule_slot=''
+           WHERE token=?""",
+        (frequency, hour, minute, weekday, purchaser, token),
+    )
+    db.commit()
+
+
+def mark_schedule_slot(db: sqlite3.Connection, token: str, slot: str):
+    db.execute(
+        "UPDATE buyers SET last_schedule_slot=? WHERE token=?", (slot, token)
+    )
+    db.commit()
+
+
+def system_event(db: sqlite3.Connection, event_key: str):
+    return db.execute(
+        "SELECT * FROM system_events WHERE event_key=?", (event_key,)
+    ).fetchone()
+
+
+def claim_system_event(db: sqlite3.Connection, event_key: str) -> bool:
+    cursor = db.execute(
+        """INSERT OR IGNORE INTO system_events(event_key,status)
+           VALUES(?,'running')""",
+        (event_key,),
+    )
+    db.commit()
+    return cursor.rowcount == 1
+
+
+def finish_system_event(db: sqlite3.Connection, event_key: str, detail: str):
+    db.execute(
+        """UPDATE system_events SET status='completed', detail=?,
+           updated_at=CURRENT_TIMESTAMP WHERE event_key=?""",
+        (detail, event_key),
+    )
+    db.commit()
+
+
 def buyer_by_token(db: sqlite3.Connection, token: str):
     return db.execute("SELECT * FROM buyers WHERE token=?", (token,)).fetchone()
+
+
+def buyer_by_open_id(db: sqlite3.Connection, open_id: str):
+    return db.execute(
+        "SELECT * FROM buyers WHERE feishu_open_id=?", (open_id,)
+    ).fetchone()
 
 
 def close_alert(db: sqlite3.Connection, order_no: str, purchaser: str):
