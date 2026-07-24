@@ -8,7 +8,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 from .config import settings
 from .feishu import oauth_user, send_admin_message, send_message
-from .jushuitan import fetch_orders
+from .jushuitan import fetch_orders, fetch_purchasers
 from .matching import normalize_person_name, unique_purchaser_match
 from .review import review_signature, valid_review_signature
 from .service import (
@@ -19,7 +19,6 @@ from .service import (
 )
 from .storage import (
     active_buyers,
-    all_buyers,
     buyer_by_token,
     claim_system_event,
     close_alert,
@@ -458,9 +457,7 @@ async def test_feishu(
     return {"ok": True, "message": "测试消息已发送"}
 
 
-def notification_page(
-    token: str, buyer, closed: list[str], team_buyers: list[str]
-) -> HTMLResponse:
+def notification_page(token: str, buyer, closed: list[str]) -> HTMLResponse:
     purchaser = escape(buyer["purchaser"])
     enabled = bool(buyer["enabled"])
     status_text = "全部通知已开启" if enabled else "全部通知已关闭"
@@ -491,10 +488,6 @@ def notification_page(
         <button class="small secondary">恢复</button></form></li>"""
         for order_no in closed
     ) or '<li class="empty">暂无单独关闭的采购单</li>'
-    manager_options = "".join(
-        f'<option value="{escape(name)}">{escape(name)}</option>'
-        for name in team_buyers
-    )
     manager_panel = ""
     if buyer["is_manager"]:
         manager_panel = f"""
@@ -502,9 +495,28 @@ def notification_page(
 <h2>采购团队数据</h2>
 <p class="help">负责人专属权限。可筛选单个采购员，或获取全团队实时在途数据；结果只发送到你的飞书。</p>
 <form class="manager-form" method="post" action="{public_url(f'/subscribe/{token}/manager/fetch-now')}">
-<select name="purchaser"><option value="*">全部采购员</option>{manager_options}</select>
+<select id="team-purchaser" name="purchaser">
+<option value="*">全部采购员</option><option disabled>正在读取聚水潭人员…</option>
+</select>
 <button onclick="this.disabled=true;this.form.submit()">筛选并发送给我</button>
-</form></section>"""
+</form><p id="team-load-status" class="help"></p></section>
+<script>
+fetch("{public_url(f'/subscribe/{token}/manager/purchasers')}")
+.then(response => {{if(!response.ok) throw new Error(); return response.json()}})
+.then(data => {{
+  const select=document.getElementById("team-purchaser");
+  select.innerHTML='<option value="*">全部采购员</option>';
+  data.purchasers.forEach(name => {{
+    const option=document.createElement("option");
+    option.value=name; option.textContent=name; select.appendChild(option);
+  }});
+  document.getElementById("team-load-status").textContent=
+    `已读取 ${{data.purchasers.length}} 位聚水潭采购员`;
+}})
+.catch(() => {{
+  document.getElementById("team-load-status").textContent="人员读取失败，请刷新重试";
+}});
+</script>"""
     return HTMLResponse(f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -577,12 +589,11 @@ def subscribe(token: str):
     try:
         buyer = buyer_by_token(db, token)
         closed = sorted(closed_order_numbers(db, buyer["purchaser"])) if buyer else []
-        team_buyers = [row["purchaser"] for row in all_buyers(db)] if buyer else []
     finally:
         db.close()
     if not buyer:
         raise HTTPException(404, "链接无效")
-    return notification_page(token, buyer, closed, team_buyers)
+    return notification_page(token, buyer, closed)
 
 
 @app.post("/subscribe/{token}/notifications/{action}")
@@ -673,6 +684,24 @@ async def manager_fetch_now(token: str, purchaser: str = Form("*")):
         <p>覆盖 {result['buyers']} 位采购员、{result['orders']} 张采购单，
         发送 {result['messages']} 张卡片。</p><p><a href="{back}">返回通知中心</a></p></div>"""
     )
+
+
+@app.get("/subscribe/{token}/manager/purchasers")
+async def manager_purchasers(token: str):
+    db = connect(settings.database_path)
+    try:
+        buyer = buyer_by_token(db, token)
+    finally:
+        db.close()
+    if not buyer:
+        raise HTTPException(404, "链接无效")
+    if not buyer["is_manager"]:
+        raise HTTPException(403, "仅采购部负责人可查看团队数据")
+    try:
+        purchasers = await fetch_purchasers()
+    except (httpx.HTTPError, RuntimeError) as exc:
+        raise HTTPException(502, f"采购员列表读取失败：{exc}") from exc
+    return {"purchasers": purchasers}
 
 
 @app.get("/manage/{token}", response_class=HTMLResponse)

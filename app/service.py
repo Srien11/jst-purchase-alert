@@ -216,6 +216,10 @@ def _active_rows(db, buyer, orders):
     ]
 
 
+def _current_in_transit(rows):
+    return [row for row in rows if row.effective_days_left >= 0]
+
+
 async def _send_rows(buyer, rows) -> int:
     manage_url = f"{settings.app_base_url.rstrip('/')}/subscribe/{buyer['token']}"
     messages = 0
@@ -322,7 +326,7 @@ async def send_manual_report(token: str) -> dict:
         if not row:
             raise KeyError(token)
         buyer = dict(row)
-        rows = _active_rows(db, buyer, orders)
+        rows = _current_in_transit(_active_rows(db, buyer, orders))
     finally:
         db.close()
     if not rows:
@@ -357,13 +361,13 @@ async def send_manager_report(token: str, purchaser: str = "*") -> dict:
     messages = rows_count = order_count = buyers_count = 0
     manage_url = f"{settings.app_base_url.rstrip('/')}/subscribe/{token}"
     for name in selected:
-        rows = [
+        rows = _current_in_transit([
             row
             for row in build_alerts(
                 orders, date.today(), name, settings.travel_buffer_days
             )
             if not row.order.is_received
-        ]
+        ])
         if not rows:
             continue
         buyers_count += 1

@@ -23,6 +23,10 @@ class MainRouteTests(unittest.TestCase):
         )
         self.assertIn('if not buyer["is_manager"]:', source)
         self.assertIn("仅采购部负责人可查看团队数据", source)
+        self.assertIn(
+            '@app.get("/subscribe/{token}/manager/purchasers")', source
+        )
+        self.assertIn("purchasers = await fetch_purchasers()", source)
 
     def test_manager_can_join_without_jushuitan_purchaser_record(self):
         source = (Path(__file__).parents[1] / "app" / "main.py").read_text(

@@ -4,6 +4,7 @@ from decimal import Decimal
 from app.logic import build_alerts, due_warning, summary
 from app.models import PurchaseOrder
 from app.service import (
+    _current_in_transit,
     build_order_summary_card,
     build_report_card,
     render_report,
@@ -37,6 +38,16 @@ class LogicTests(unittest.TestCase):
         self.assertEqual(
             {r.effective_days_left for r in due_warning(rows, (12, 7, 3))},
             {12, 7, 3},
+        )
+
+    def test_manual_in_transit_excludes_negative_days(self):
+        rows = build_alerts(
+            [self.order("OVERDUE", 2), self.order("CURRENT", 3)],
+            date(2026, 7, 24), "小王", 3
+        )
+        self.assertEqual(
+            [row.order.order_no for row in _current_in_transit(rows)],
+            ["CURRENT"],
         )
 
     def test_received_summary(self):

@@ -22,6 +22,10 @@ from .models import PurchaseOrder
 ACTIVE_PURCHASE_STATUSES = ["Confirmed", "WaitDeliver", "WaitReceive"]
 
 
+def _clean_name(value) -> str:
+    return " ".join(str(value or "").split())
+
+
 def _chunks(values, size):
     iterator = iter(values)
     while chunk := list(islice(iterator, size)):
@@ -150,7 +154,7 @@ def _flatten(purchases: list[dict], received) -> list[PurchaseOrder]:
             result.append(
                 PurchaseOrder(
                     order_no=po_id,
-                    purchaser=str(purchase.get("purchaser_name", "")).strip(),
+                    purchaser=_clean_name(purchase.get("purchaser_name", "")),
                     supplier=str(purchase.get("seller", "")).strip(),
                     delivery_date=_delivery_date(item.get("delivery_date")),
                     ordered_qty=Decimal(str(item.get("qty") or 0)),
@@ -204,3 +208,17 @@ async def fetch_orders() -> list[PurchaseOrder]:
         po_ids = [int(row["po_id"]) for row in purchases]
         received = await _received_quantities(client, po_ids) if po_ids else {}
     return _flatten(purchases, received)
+
+
+async def fetch_purchasers() -> list[str]:
+    if settings.demo_mode:
+        return ["演示采购员"]
+    async with httpx.AsyncClient(timeout=45) as client:
+        purchases = await _purchase_rows(client)
+    return sorted(
+        {
+            _clean_name(row.get("purchaser_name"))
+            for row in purchases
+            if _clean_name(row.get("purchaser_name"))
+        }
+    )

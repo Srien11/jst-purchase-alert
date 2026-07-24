@@ -58,6 +58,21 @@ class JushuitanMappingTests(unittest.TestCase):
         }]
         self.assertEqual(_flatten(purchases, {}), [])
 
+    def test_purchaser_whitespace_is_normalized(self):
+        purchases = [{
+            "po_id": 113624,
+            "purchaser_name": "张小薇&花卷\n 桐乡",
+            "seller": "供应商C",
+            "items": [{
+                "sku_id": "SKU-1",
+                "qty": 1,
+                "delivery_date": "2026-08-10T00:00:00",
+            }],
+        }]
+        self.assertEqual(
+            _flatten(purchases, {})[0].purchaser, "张小薇&花卷 桐乡"
+        )
+
     async def _windowed_rows(self):
         responses = [
             {"datas": [{"po_id": 1, "modified": "old"}], "has_next": False},
