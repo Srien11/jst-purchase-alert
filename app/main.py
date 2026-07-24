@@ -7,8 +7,9 @@ from fastapi import FastAPI, Form, Header, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 from .config import settings
-from .feishu import oauth_user, send_message
+from .feishu import oauth_user, send_admin_message, send_message
 from .jushuitan import fetch_orders
+from .matching import unique_purchaser_match
 from .service import run_check
 from .storage import (
     buyer_by_token,
@@ -52,6 +53,10 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="聚水潭采购交期预警", lifespan=lifespan)
 
 
+def public_url(path: str) -> str:
+    return f"{settings.app_base_url.rstrip('/')}/{path.lstrip('/')}"
+
+
 class BuyerInput(BaseModel):
     purchaser: str
     feishu_open_id: str
@@ -79,7 +84,7 @@ def join():
         state = create_oauth_state(db)
     finally:
         db.close()
-    callback = f"{settings.app_base_url.rstrip('/')}/join/callback"
+    callback = public_url("/join/callback")
     url = (
         "https://open.feishu.cn/open-apis/authen/v1/index"
         f"?app_id={quote(settings.feishu_app_id)}"
@@ -108,7 +113,7 @@ async def join_callback(code: str, state: str):
     except Exception as exc:
         raise HTTPException(502, f"读取采购员列表失败：{exc}") from exc
     purchasers = sorted({o.purchaser for o in orders if o.purchaser})
-    exact = next((p for p in purchasers if p.strip() == name), None)
+    exact = unique_purchaser_match(name, purchasers)
     options = "".join(
         f'<option value="{escape(p)}"{" selected" if p == exact else ""}>{escape(p)}</option>'
         for p in purchasers
@@ -130,7 +135,7 @@ select{{border:1px solid #dce3ed;background:white}}button{{margin-top:20px;borde
 background:#1677ff;color:white;font-weight:700}}p{{color:#607087;line-height:1.7}}</style>
 </head><body><main class="card"><h1>开通采购交期预警</h1>
 <p>飞书用户：<strong>{escape(name)}</strong></p><p>{escape(hint)}</p>
-<form method="post" action="/join/confirm">
+<form method="post" action="{public_url('/join/confirm')}">
 <input type="hidden" name="token" value="{escape(token)}">
 <label>聚水潭采购员</label><select name="purchaser" required>{options}</select>
 <button>确认开通</button></form></main></body></html>"""
@@ -150,15 +155,31 @@ async def join_confirm(token: str = Form(...), purchaser: str = Form(...)):
         session = join_session(db, token)
         if not session:
             raise HTTPException(400, "确认页面已过期，请重新开通")
-        if session["feishu_name"].strip() == purchaser.strip():
+        automatic_match = unique_purchaser_match(
+            session["feishu_name"], purchasers
+        )
+        if automatic_match == purchaser:
             manage_token = upsert_buyer(db, purchaser, session["open_id"])
             set_buyer_enabled(db, manage_token, True)
-            return RedirectResponse(f"/subscribe/{manage_token}", status_code=303)
+            return RedirectResponse(public_url(f"/subscribe/{manage_token}"), status_code=303)
         request_id = create_join_request(
             db, session["open_id"], session["feishu_name"], purchaser
         )
     finally:
         db.close()
+    if settings.feishu_admin_open_id or settings.feishu_admin_mobile:
+        try:
+            await send_admin_message(
+                "采购预警开通申请待审核",
+                (
+                    f"申请编号：{request_id}\n"
+                    f"飞书姓名：{session['feishu_name']}\n"
+                    f"申请采购员：{purchaser}\n"
+                    "姓名无法安全自动匹配，请管理员审核。"
+                ),
+            )
+        except (httpx.HTTPError, RuntimeError):
+            pass
     return HTMLResponse(
         f"<h2>申请已提交</h2><p>申请编号：{request_id}。姓名不一致，管理员审核后生效。</p>"
     )
@@ -233,7 +254,7 @@ def notification_page(token: str, buyer, closed: list[str]) -> HTMLResponse:
     )
     order_items = "".join(
         f"""<li><div><strong>{escape(order_no)}</strong><span>已关闭单据预警</span></div>
-        <form method="post" action="/subscribe/{token}/orders/{escape(order_no)}/reopen">
+        <form method="post" action="{public_url(f'/subscribe/{token}/orders/{escape(order_no)}/reopen')}">
         <button class="small secondary">恢复</button></form></li>"""
         for order_no in closed
     ) or '<li class="empty">暂无单独关闭的采购单</li>'
@@ -272,13 +293,13 @@ padding:13px 4px;border-top:1px solid #edf0f4}} li span{{display:block;color:#87
 <h1>通知中心</h1><p class="who">采购员：<strong>{purchaser}</strong></p>
 <div class="status {status_class}"><div><span class="dot"></span><strong>{status_text}</strong>
 <div class="help">每天 09:00 检查；扣除 3 天运输缓冲，在剩余 12 / 7 / 3 天时提醒。</div></div>
-<form method="post" action="/subscribe/{token}/{action}">
+<form method="post" action="{public_url(f'/subscribe/{token}/{action}')}">
 <button class="{'danger' if enabled else ''}"{action_confirm}>{action_text}</button></form></div>
 <p class="help">关闭后，此后再开启前不接收任何提醒，系统重启或次日检查也不会自动恢复。
 首次开启即表示确认订阅；没有命中预警时不发送飞书消息，节假日照常检查。</p>
 </section>
 <section class="card"><h2>单据通知管理</h2>
-<form class="close-form" method="post" action="/subscribe/{token}/orders/close">
+<form class="close-form" method="post" action="{public_url(f'/subscribe/{token}/orders/close')}">
 <input name="order_no" required placeholder="输入采购单号，例如 PO-20260701">
 <button class="secondary">关闭该单预警</button></form>
 <ul>{order_items}</ul></section></main></body></html>""")
@@ -308,12 +329,12 @@ def toggle_subscription(token: str, action: str):
         set_buyer_enabled(db, token, action == "enable")
     finally:
         db.close()
-    return RedirectResponse(f"/subscribe/{token}", status_code=303)
+    return RedirectResponse(public_url(f"/subscribe/{token}"), status_code=303)
 
 
 @app.get("/manage/{token}", response_class=HTMLResponse)
 def manage(token: str):
-    return RedirectResponse(f"/subscribe/{token}", status_code=302)
+    return RedirectResponse(public_url(f"/subscribe/{token}"), status_code=302)
 
 
 @app.post("/subscribe/{token}/orders/close")
@@ -326,7 +347,7 @@ def close_one(token: str, order_no: str = Form(...)):
         close_alert(db, order_no.strip(), buyer["purchaser"])
     finally:
         db.close()
-    return RedirectResponse(f"/subscribe/{token}", status_code=303)
+    return RedirectResponse(public_url(f"/subscribe/{token}"), status_code=303)
 
 
 @app.post("/subscribe/{token}/orders/{order_no}/reopen")
@@ -339,4 +360,4 @@ def reopen_one(token: str, order_no: str):
         reopen_alert(db, order_no, buyer["purchaser"])
     finally:
         db.close()
-    return RedirectResponse(f"/subscribe/{token}", status_code=303)
+    return RedirectResponse(public_url(f"/subscribe/{token}"), status_code=303)
