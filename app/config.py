@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     jst_app_key: str = ""
     jst_app_secret: str = ""
     jst_access_token: str = ""
+    jst_purchase_lookback_days: int = 180
+    jst_request_interval_seconds: float = 0.4
     feishu_app_id: str = ""
     feishu_app_secret: str = ""
     feishu_admin_open_id: str = ""
