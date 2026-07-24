@@ -454,7 +454,7 @@ padding:13px 4px;border-top:1px solid #edf0f4}} li span{{display:block;color:#87
 <h1>通知中心</h1><p class="who">采购员：<strong>{purchaser}</strong></p>
 <div class="status {status_class}"><div><span class="dot"></span><strong>{status_text}</strong>
 <div class="help">按你的个人时间检查；扣除 3 天运输缓冲，在剩余 12 / 7 / 3 天时提醒。</div></div>
-<form method="post" action="{public_url(f'/subscribe/{token}/{action}')}">
+<form method="post" action="{public_url(f'/subscribe/{token}/notifications/{action}')}">
 <button class="{'danger' if enabled else ''}"{action_confirm}>{action_text}</button></form></div>
 <p class="help">关闭后，此后再开启前不接收任何提醒，系统重启或次日检查也不会自动恢复。
 首次开启即表示确认订阅；没有命中预警时不发送飞书消息，节假日照常检查。</p>
@@ -474,7 +474,10 @@ padding:13px 4px;border-top:1px solid #edf0f4}} li span{{display:block;color:#87
 <form class="close-form" method="post" action="{public_url(f'/subscribe/{token}/orders/close')}">
 <input name="order_no" required placeholder="输入采购单号，例如 PO-20260701">
 <button class="secondary">关闭该单预警</button></form>
-<ul>{order_items}</ul></section></main></body></html>""")
+<ul>{order_items}</ul></section></main></body></html>""", headers={
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+    })
 
 
 @app.get("/subscribe/{token}", response_class=HTMLResponse)
@@ -490,7 +493,7 @@ def subscribe(token: str):
     return notification_page(token, buyer, closed)
 
 
-@app.post("/subscribe/{token}/{action}")
+@app.post("/subscribe/{token}/notifications/{action}")
 def toggle_subscription(token: str, action: str):
     if action not in {"enable", "disable"}:
         raise HTTPException(404)
