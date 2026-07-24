@@ -417,7 +417,7 @@ toggleWeekday();
     if not buyer["is_manager"]:
         personal_panels = f"""
 <section class="card"><h2>立即获取在途数据</h2>
-<div class="manual"><p class="help">实时读取你名下有效剩余 0–15 天且尚未全部入库的明细：0–6 天红色、7–10 天黄色、11–15 天绿色。</p>
+<div class="manual"><p class="help">实时读取你名下有效剩余 0–15 天且尚未全部入库的明细。显示天数均已扣除 3 天运输时间：0–6 天红色、7–10 天黄色、11–15 天绿色。</p>
 <form method="post" action="{public_url(f'/subscribe/{token}/fetch-now')}">
 <button onclick="this.disabled=true;this.form.submit()">立即发送给我</button></form></div></section>
 <section class="card"><h2>单据通知管理</h2>
@@ -501,7 +501,7 @@ padding:13px 4px;border-top:1px solid #edf0f4}} li span{{display:block;color:#87
 <section class="card"><div class="eyebrow">NOTIFICATION CENTER</div>
 <h1>通知中心</h1><p class="who">采购员：<strong>{purchaser}</strong></p>
 <div class="status {status_class}"><div><span class="dot"></span><strong>{status_text}</strong>
-<div class="help">按你的个人时间检查；扣除 3 天运输缓冲，在剩余 15 / 10 / 6 天时提醒。</div></div>
+<div class="help">显示与推送均使用已扣除 3 天运输时间后的有效剩余天数：0–6 天红色、7–10 天黄色、11–15 天绿色。</div></div>
 <form method="post" action="{public_url(f'/subscribe/{token}/notifications/{action}')}">
 <button class="{'danger' if enabled else ''}"{action_confirm}>{action_text}</button></form></div>
 <p class="help">关闭后，此后再开启前不接收任何提醒，系统重启或次日检查也不会自动恢复。
