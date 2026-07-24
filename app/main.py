@@ -11,7 +11,7 @@ from .feishu import oauth_user, send_admin_message, send_message
 from .jushuitan import fetch_orders
 from .matching import unique_purchaser_match
 from .review import review_signature, valid_review_signature
-from .service import run_check
+from .service import run_check, run_scheduled_checks, send_manual_report
 from .storage import (
     active_buyers,
     buyer_by_token,
@@ -33,6 +33,7 @@ from .storage import (
     reopen_alert,
     set_buyer_enabled,
     system_event,
+    update_buyer_schedule,
     upsert_buyer,
 )
 
@@ -44,11 +45,10 @@ ONE_TIME_BOUND_TEST = "bound-buyers-test-v1"
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     scheduler.add_job(
-        run_check,
+        run_scheduled_checks,
         "cron",
-        hour=settings.check_hour,
-        minute=settings.check_minute,
-        id="daily-purchase-alert",
+        minute="*",
+        id="personal-purchase-alerts",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
@@ -397,6 +397,20 @@ def notification_page(token: str, buyer, closed: list[str]) -> HTMLResponse:
         ' onclick="return confirm(\'关闭后，在你再次手动开启前不会收到任何采购提醒。确认关闭？\')"'
         if enabled else ""
     )
+    frequency = buyer["schedule_frequency"]
+    frequency_options = "".join(
+        f'<option value="{value}"{" selected" if frequency == value else ""}>{label}</option>'
+        for value, label in (
+            ("daily", "每天"),
+            ("weekdays", "工作日（周一至周五）"),
+            ("weekly", "每周一次"),
+        )
+    )
+    weekday_options = "".join(
+        f'<option value="{value}"{" selected" if buyer["schedule_weekday"] == value else ""}>{label}</option>'
+        for value, label in enumerate(("周一", "周二", "周三", "周四", "周五", "周六", "周日"))
+    )
+    schedule_time = f"{buyer['schedule_hour']:02d}:{buyer['schedule_minute']:02d}"
     order_items = "".join(
         f"""<li><div><strong>{escape(order_no)}</strong><span>已关闭单据预警</span></div>
         <form method="post" action="{public_url(f'/subscribe/{token}/orders/{escape(order_no)}/reopen')}">
@@ -424,25 +438,38 @@ align-items:center;padding:18px;border-radius:16px;background:#f6f8fb;margin-bot
 .on .dot{{background:#19b66b;box-shadow:0 0 0 5px #19b66b18}} .off .dot{{background:#94a3b8}}
 button{{border:0;border-radius:12px;background:#1677ff;color:white;font-weight:700;padding:12px 18px;
 cursor:pointer}} button.danger{{background:#fff0f0;color:#d93f46}} button.secondary{{background:#edf4ff;color:#1769cf}}
-button.small{{padding:8px 13px}} form{{margin:0}} .help{{font-size:13px;color:#7a8799;line-height:1.7}}
-h2{{font-size:18px;margin:0 0 14px}} .close-form{{display:flex;gap:10px;margin:12px 0 18px}}
-input{{min-width:0;flex:1;border:1px solid #dce3ed;border-radius:12px;padding:12px 14px;font-size:15px}}
+ button.small{{padding:8px 13px}} form{{margin:0}} .help{{font-size:13px;color:#7a8799;line-height:1.7}}
+ h2{{font-size:18px;margin:0 0 14px}} .close-form{{display:flex;gap:10px;margin:12px 0 18px}}
+ input,select{{min-width:0;flex:1;border:1px solid #dce3ed;border-radius:12px;padding:12px 14px;font-size:15px;background:white}}
+ .schedule-form{{display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:10px;align-items:end}}
+ .field label{{display:block;color:#607087;font-size:13px;margin-bottom:6px}} .manual{{display:flex;gap:14px;align-items:center}}
 ul{{list-style:none;padding:0;margin:0}} li{{display:flex;justify-content:space-between;align-items:center;
 padding:13px 4px;border-top:1px solid #edf0f4}} li span{{display:block;color:#8792a4;font-size:12px;margin-top:4px}}
 .empty{{color:#8b96a8;justify-content:center;padding:22px}} @media(max-width:560px){{.wrap{{margin:20px auto}}
 .card{{padding:20px;border-radius:20px}} .status{{align-items:flex-start;gap:14px;flex-direction:column}}
-.close-form{{flex-direction:column}} button{{width:100%}}}}
+ .close-form,.manual{{flex-direction:column;align-items:stretch}} .schedule-form{{grid-template-columns:1fr}} button{{width:100%}}}}
 </style></head><body><main class="wrap">
 <div class="brand"><div class="logo">◆</div><span>采购交期预警</span></div>
 <section class="card"><div class="eyebrow">NOTIFICATION CENTER</div>
 <h1>通知中心</h1><p class="who">采购员：<strong>{purchaser}</strong></p>
 <div class="status {status_class}"><div><span class="dot"></span><strong>{status_text}</strong>
-<div class="help">每天 09:00 检查；扣除 3 天运输缓冲，在剩余 12 / 7 / 3 天时提醒。</div></div>
+<div class="help">按你的个人时间检查；扣除 3 天运输缓冲，在剩余 12 / 7 / 3 天时提醒。</div></div>
 <form method="post" action="{public_url(f'/subscribe/{token}/{action}')}">
 <button class="{'danger' if enabled else ''}"{action_confirm}>{action_text}</button></form></div>
 <p class="help">关闭后，此后再开启前不接收任何提醒，系统重启或次日检查也不会自动恢复。
 首次开启即表示确认订阅；没有命中预警时不发送飞书消息，节假日照常检查。</p>
 </section>
+<section class="card"><h2>个人推送时间</h2>
+<form class="schedule-form" method="post" action="{public_url(f'/subscribe/{token}/schedule')}">
+<div class="field"><label>频率</label><select name="frequency">{frequency_options}</select></div>
+<div class="field"><label>推送时间</label><input type="time" name="schedule_time" value="{schedule_time}" required></div>
+<div class="field"><label>每周日期（仅每周一次生效）</label><select name="weekday">{weekday_options}</select></div>
+<button>保存设置</button></form>
+<p class="help">每天与工作日模式忽略“每周日期”。时间使用北京时间。</p></section>
+<section class="card"><h2>立即获取在途数据</h2>
+<div class="manual"><p class="help">实时读取你名下全部未入库明细并发送飞书表格，不影响自动提醒记录。</p>
+<form method="post" action="{public_url(f'/subscribe/{token}/fetch-now')}">
+<button onclick="this.disabled=true;this.form.submit()">立即发送给我</button></form></div></section>
 <section class="card"><h2>单据通知管理</h2>
 <form class="close-form" method="post" action="{public_url(f'/subscribe/{token}/orders/close')}">
 <input name="order_no" required placeholder="输入采购单号，例如 PO-20260701">
@@ -475,6 +502,55 @@ def toggle_subscription(token: str, action: str):
     finally:
         db.close()
     return RedirectResponse(public_url(f"/subscribe/{token}"), status_code=303)
+
+
+@app.post("/subscribe/{token}/schedule")
+def save_schedule(
+    token: str,
+    frequency: str = Form(...),
+    schedule_time: str = Form(...),
+    weekday: int = Form(0),
+):
+    if frequency not in {"daily", "weekdays", "weekly"} or weekday not in range(7):
+        raise HTTPException(400, "推送频率设置无效")
+    try:
+        hour_text, minute_text = schedule_time.split(":", 1)
+        hour, minute = int(hour_text), int(minute_text)
+    except (ValueError, AttributeError) as exc:
+        raise HTTPException(400, "推送时间格式无效") from exc
+    if hour not in range(24) or minute not in range(60):
+        raise HTTPException(400, "推送时间无效")
+    db = connect(settings.database_path)
+    try:
+        if not buyer_by_token(db, token):
+            raise HTTPException(404, "链接无效")
+        update_buyer_schedule(db, token, frequency, hour, minute, weekday)
+    finally:
+        db.close()
+    return RedirectResponse(public_url(f"/subscribe/{token}"), status_code=303)
+
+
+@app.post("/subscribe/{token}/fetch-now", response_class=HTMLResponse)
+async def fetch_now(token: str):
+    db = connect(settings.database_path)
+    try:
+        buyer = buyer_by_token(db, token)
+    finally:
+        db.close()
+    if not buyer:
+        raise HTTPException(404, "链接无效")
+    try:
+        result = await send_manual_report(token)
+    except (httpx.HTTPError, RuntimeError) as exc:
+        raise HTTPException(502, f"立即获取失败：{exc}") from exc
+    back = public_url(f"/subscribe/{token}")
+    return HTMLResponse(
+        f"""<meta name="viewport" content="width=device-width,initial-scale=1">
+        <div style="max-width:520px;margin:12vh auto;font-family:sans-serif;padding:28px">
+        <h2>已发送到飞书</h2>
+        <p>共 {result['rows']} 条在途明细，{result['orders']} 张采购单，
+        发送 {result['messages']} 张卡片。</p><p><a href="{back}">返回通知中心</a></p></div>"""
+    )
 
 
 @app.get("/manage/{token}", response_class=HTMLResponse)

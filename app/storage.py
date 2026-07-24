@@ -57,6 +57,18 @@ def connect(path: str) -> sqlite3.Connection:
         );
         """
     )
+    columns = {row["name"] for row in db.execute("PRAGMA table_info(buyers)")}
+    migrations = {
+        "schedule_frequency": "TEXT NOT NULL DEFAULT 'daily'",
+        "schedule_hour": "INTEGER NOT NULL DEFAULT 9",
+        "schedule_minute": "INTEGER NOT NULL DEFAULT 0",
+        "schedule_weekday": "INTEGER NOT NULL DEFAULT 0",
+        "last_schedule_slot": "TEXT NOT NULL DEFAULT ''",
+    }
+    for name, definition in migrations.items():
+        if name not in columns:
+            db.execute(f"ALTER TABLE buyers ADD COLUMN {name} {definition}")
+    db.commit()
     return db
 
 
@@ -88,6 +100,30 @@ def set_buyer_enabled(db: sqlite3.Connection, token: str, enabled: bool):
 
 def active_buyers(db: sqlite3.Connection):
     return db.execute("SELECT * FROM buyers WHERE enabled=1 ORDER BY purchaser").fetchall()
+
+
+def update_buyer_schedule(
+    db: sqlite3.Connection,
+    token: str,
+    frequency: str,
+    hour: int,
+    minute: int,
+    weekday: int,
+):
+    db.execute(
+        """UPDATE buyers SET schedule_frequency=?, schedule_hour=?,
+           schedule_minute=?, schedule_weekday=?, last_schedule_slot=''
+           WHERE token=?""",
+        (frequency, hour, minute, weekday, token),
+    )
+    db.commit()
+
+
+def mark_schedule_slot(db: sqlite3.Connection, token: str, slot: str):
+    db.execute(
+        "UPDATE buyers SET last_schedule_slot=? WHERE token=?", (slot, token)
+    )
+    db.commit()
 
 
 def system_event(db: sqlite3.Connection, event_key: str):

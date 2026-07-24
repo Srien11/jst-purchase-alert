@@ -1,9 +1,20 @@
-from datetime import date
+from datetime import date, datetime
 from .config import settings
-from .feishu import send_card
+from .feishu import send_card, send_message
 from .jushuitan import fetch_orders
 from .logic import build_alerts, due_warning, summary
-from .storage import active_buyers, closed_order_numbers, connect, mark_sent, was_sent
+from .storage import (
+    active_buyers,
+    buyer_by_token,
+    closed_order_numbers,
+    connect,
+    mark_schedule_slot,
+    mark_sent,
+    was_sent,
+)
+
+
+CARD_TABLE_ROW_LIMIT = 50
 
 
 def render_report(purchaser: str, rows, manage_url: str) -> str:
@@ -39,7 +50,11 @@ def build_report_card(purchaser: str, rows, manage_url: str) -> dict:
     for row in rows:
         order = row.order
         table_rows.append({
-            "level": "🔴 紧急" if row.level == "红" else "🟡 关注",
+            "level": (
+                "🔴 紧急" if row.level == "红"
+                else "🟡 关注" if row.level == "黄"
+                else "🟢 正常"
+            ),
             "order_no": order.order_no,
             "supplier": order.supplier,
             "item": order.item_name or order.sku,
@@ -98,39 +113,130 @@ def build_report_card(purchaser: str, rows, manage_url: str) -> dict:
     }
 
 
-async def run_check() -> dict:
-    orders = await fetch_orders()
+def schedule_slot(buyer, now: datetime) -> str | None:
+    if (now.hour, now.minute) != (
+        buyer["schedule_hour"],
+        buyer["schedule_minute"],
+    ):
+        return None
+    frequency = buyer["schedule_frequency"]
+    if frequency == "weekdays" and now.weekday() >= 5:
+        return None
+    if frequency == "weekly" and now.weekday() != buyer["schedule_weekday"]:
+        return None
+    if frequency not in {"daily", "weekdays", "weekly"}:
+        return None
+    slot = now.strftime("%Y-%m-%dT%H:%M")
+    return None if buyer["last_schedule_slot"] == slot else slot
+
+
+def _active_rows(db, buyer, orders):
+    rows = build_alerts(
+        orders, date.today(), buyer["purchaser"], settings.travel_buffer_days
+    )
+    closed = closed_order_numbers(db, buyer["purchaser"])
+    return [
+        row for row in rows
+        if row.order.order_no not in closed and not row.order.is_received
+    ]
+
+
+async def _send_rows(buyer, rows) -> int:
+    manage_url = f"{settings.app_base_url.rstrip('/')}/subscribe/{buyer['token']}"
+    messages = 0
+    for start in range(0, len(rows), CARD_TABLE_ROW_LIMIT):
+        chunk = rows[start:start + CARD_TABLE_ROW_LIMIT]
+        await send_card(
+            buyer["feishu_open_id"],
+            build_report_card(buyer["purchaser"], chunk, manage_url),
+        )
+        messages += 1
+    return messages
+
+
+async def _run_for_buyers(buyers, orders) -> dict:
     db = connect(settings.database_path)
     result = {"buyers": 0, "messages": 0, "orders": len(orders)}
     try:
-        for buyer in active_buyers(db):
+        for buyer in buyers:
             result["buyers"] += 1
-            rows = build_alerts(
-                orders, date.today(), buyer["purchaser"], settings.travel_buffer_days
-            )
-            closed = closed_order_numbers(db, buyer["purchaser"])
-            active_rows = [r for r in rows if r.order.order_no not in closed]
             due = [
-                r for r in due_warning(active_rows, settings.warning_day_values)
+                row
+                for row in due_warning(_active_rows(db, buyer, orders), settings.warning_day_values)
                 if not was_sent(
-                    db, r.order.order_no, buyer["purchaser"], r.effective_days_left
+                    db, row.order.order_no, buyer["purchaser"], row.effective_days_left
                 )
             ]
             if not due:
                 continue
-            await send_card(
-                buyer["feishu_open_id"],
-                build_report_card(
-                    buyer["purchaser"],
-                    due,
-                    f"{settings.app_base_url.rstrip('/')}/subscribe/{buyer['token']}",
-                ),
-            )
+            result["messages"] += await _send_rows(buyer, due)
             for row in due:
                 mark_sent(
                     db, row.order.order_no, buyer["purchaser"], row.effective_days_left
                 )
-            result["messages"] += 1
     finally:
         db.close()
     return result
+
+
+async def run_check() -> dict:
+    db = connect(settings.database_path)
+    try:
+        buyers = [dict(row) for row in active_buyers(db)]
+    finally:
+        db.close()
+    orders = await fetch_orders()
+    return await _run_for_buyers(buyers, orders)
+
+
+async def run_scheduled_checks(now: datetime | None = None) -> dict:
+    current = now or datetime.now()
+    db = connect(settings.database_path)
+    try:
+        due_buyers = []
+        slots = {}
+        for row in active_buyers(db):
+            buyer = dict(row)
+            slot = schedule_slot(buyer, current)
+            if slot:
+                due_buyers.append(buyer)
+                slots[buyer["token"]] = slot
+    finally:
+        db.close()
+    if not due_buyers:
+        return {"buyers": 0, "messages": 0, "orders": 0}
+    orders = await fetch_orders()
+    result = await _run_for_buyers(due_buyers, orders)
+    db = connect(settings.database_path)
+    try:
+        for buyer in due_buyers:
+            mark_schedule_slot(db, buyer["token"], slots[buyer["token"]])
+    finally:
+        db.close()
+    return result
+
+
+async def send_manual_report(token: str) -> dict:
+    orders = await fetch_orders()
+    db = connect(settings.database_path)
+    try:
+        row = buyer_by_token(db, token)
+        if not row:
+            raise KeyError(token)
+        buyer = dict(row)
+        rows = _active_rows(db, buyer, orders)
+    finally:
+        db.close()
+    if not rows:
+        await send_message(
+            buyer["feishu_open_id"],
+            "采购在途数据｜立即获取",
+            "当前没有未全部入库的在途采购明细。",
+        )
+        return {"messages": 1, "rows": 0, "orders": 0}
+    messages = await _send_rows(buyer, rows)
+    return {
+        "messages": messages,
+        "rows": len(rows),
+        "orders": len({row.order.order_no for row in rows}),
+    }

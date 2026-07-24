@@ -10,8 +10,10 @@ from app.storage import (
     claim_system_event,
     finish_system_event,
     reopen_alert,
+    mark_schedule_slot,
     set_buyer_enabled,
     system_event,
+    update_buyer_schedule,
     upsert_buyer,
 )
 
@@ -55,6 +57,33 @@ class StorageTests(unittest.TestCase):
                 event = system_event(db, "test-once")
                 self.assertEqual(event["status"], "completed")
                 self.assertEqual(event["detail"], "成功 1/1")
+            finally:
+                db.close()
+
+    def test_buyer_schedule_defaults_and_updates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = connect(str(Path(tmp) / "schedule.db"))
+            try:
+                token = upsert_buyer(db, "采购员甲", "ou_a")
+                buyer = buyer_by_token(db, token)
+                self.assertEqual(buyer["schedule_frequency"], "daily")
+                self.assertEqual((buyer["schedule_hour"], buyer["schedule_minute"]), (9, 0))
+                update_buyer_schedule(db, token, "weekly", 14, 30, 4)
+                buyer = buyer_by_token(db, token)
+                self.assertEqual(
+                    (
+                        buyer["schedule_frequency"],
+                        buyer["schedule_hour"],
+                        buyer["schedule_minute"],
+                        buyer["schedule_weekday"],
+                    ),
+                    ("weekly", 14, 30, 4),
+                )
+                mark_schedule_slot(db, token, "2026-07-24T14:30")
+                self.assertEqual(
+                    buyer_by_token(db, token)["last_schedule_slot"],
+                    "2026-07-24T14:30",
+                )
             finally:
                 db.close()
 

@@ -1,9 +1,9 @@
 import unittest
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from app.logic import build_alerts, due_warning, summary
 from app.models import PurchaseOrder
-from app.service import build_report_card, render_report
+from app.service import build_report_card, render_report, schedule_slot
 
 
 class LogicTests(unittest.TestCase):
@@ -72,6 +72,23 @@ class LogicTests(unittest.TestCase):
         self.assertEqual(table["rows"][0]["order_no"], "DUE")
         self.assertEqual(len(table["rows"]), 1)
         self.assertEqual(table["page_size"], 10)
+
+    def test_personal_schedule_slots(self):
+        buyer = {
+            "schedule_frequency": "daily",
+            "schedule_hour": 9,
+            "schedule_minute": 15,
+            "schedule_weekday": 0,
+            "last_schedule_slot": "",
+        }
+        monday = datetime(2026, 7, 20, 9, 15)
+        self.assertEqual(schedule_slot(buyer, monday), "2026-07-20T09:15")
+        buyer["schedule_frequency"] = "weekdays"
+        self.assertIsNone(schedule_slot(buyer, datetime(2026, 7, 19, 9, 15)))
+        buyer["schedule_frequency"] = "weekly"
+        self.assertEqual(schedule_slot(buyer, monday), "2026-07-20T09:15")
+        buyer["last_schedule_slot"] = "2026-07-20T09:15"
+        self.assertIsNone(schedule_slot(buyer, monday))
 
 
 if __name__ == "__main__":
