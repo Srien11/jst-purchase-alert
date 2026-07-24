@@ -113,6 +113,81 @@ def build_report_card(purchaser: str, rows, manage_url: str) -> dict:
     }
 
 
+def build_order_summary_card(purchaser: str, rows, manage_url: str) -> dict:
+    grouped = {}
+    for row in rows:
+        grouped.setdefault(row.order.order_no, []).append(row)
+    table_rows = []
+    for order_no, order_rows in grouped.items():
+        orders = [row.order for row in order_rows]
+        most_urgent = min(order_rows, key=lambda row: row.effective_days_left)
+        suppliers = sorted({order.supplier for order in orders if order.supplier})
+        table_rows.append({
+            "level": (
+                "🔴 紧急" if most_urgent.level == "红"
+                else "🟡 关注" if most_urgent.level == "黄"
+                else "🟢 正常"
+            ),
+            "order_no": order_no,
+            "supplier": "、".join(suppliers),
+            "sku_count": str(len({order.sku for order in orders})),
+            "delivery_date": str(min(order.delivery_date for order in orders)),
+            "days_left": f"{most_urgent.effective_days_left} 天",
+            "ordered_qty": str(sum(order.ordered_qty for order in orders)),
+            "received_qty": str(sum(order.received_qty for order in orders)),
+            "pending_qty": str(sum(order.pending_qty for order in orders)),
+        })
+    table_rows.sort(key=lambda row: (int(row["days_left"].split()[0]), row["order_no"]))
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": "blue",
+            "title": {
+                "tag": "plain_text",
+                "content": f"采购在途汇总｜{purchaser}",
+            },
+        },
+        "elements": [
+            {
+                "tag": "markdown",
+                "content": (
+                    f"**实时在途数据**\n"
+                    f"采购单：**{len(grouped)}** 单　SKU 明细：**{len(rows)}** 条\n"
+                    "表格已按采购单聚合，每张采购单仅显示一行。"
+                ),
+            },
+            {"tag": "hr"},
+            {
+                "tag": "table",
+                "page_size": 10,
+                "row_height": "low",
+                "freeze_first_column": True,
+                "columns": [
+                    {"name": "level", "display_name": "等级", "data_type": "text", "width": "auto"},
+                    {"name": "order_no", "display_name": "采购单", "data_type": "text", "width": "auto"},
+                    {"name": "supplier", "display_name": "供应商", "data_type": "text", "width": "auto"},
+                    {"name": "sku_count", "display_name": "SKU数", "data_type": "text", "width": "auto"},
+                    {"name": "delivery_date", "display_name": "最早交期", "data_type": "text", "width": "auto"},
+                    {"name": "days_left", "display_name": "最短剩余", "data_type": "text", "width": "auto"},
+                    {"name": "ordered_qty", "display_name": "订购", "data_type": "text", "width": "auto"},
+                    {"name": "received_qty", "display_name": "已入库", "data_type": "text", "width": "auto"},
+                    {"name": "pending_qty", "display_name": "在途", "data_type": "text", "width": "auto"},
+                ],
+                "rows": table_rows,
+            },
+            {
+                "tag": "action",
+                "actions": [{
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "管理预警"},
+                    "type": "primary",
+                    "url": manage_url,
+                }],
+            },
+        ],
+    }
+
+
 def schedule_slot(buyer, now: datetime) -> str | None:
     if (now.hour, now.minute) != (
         buyer["schedule_hour"],
@@ -149,6 +224,21 @@ async def _send_rows(buyer, rows) -> int:
         await send_card(
             buyer["feishu_open_id"],
             build_report_card(buyer["purchaser"], chunk, manage_url),
+        )
+        messages += 1
+    return messages
+
+
+async def _send_order_summaries(buyer, rows) -> int:
+    manage_url = f"{settings.app_base_url.rstrip('/')}/subscribe/{buyer['token']}"
+    order_numbers = list(dict.fromkeys(row.order.order_no for row in rows))
+    messages = 0
+    for start in range(0, len(order_numbers), CARD_TABLE_ROW_LIMIT):
+        selected = set(order_numbers[start:start + CARD_TABLE_ROW_LIMIT])
+        chunk = [row for row in rows if row.order.order_no in selected]
+        await send_card(
+            buyer["feishu_open_id"],
+            build_order_summary_card(buyer["purchaser"], chunk, manage_url),
         )
         messages += 1
     return messages
@@ -234,7 +324,7 @@ async def send_manual_report(token: str) -> dict:
             "当前没有未全部入库的在途采购明细。",
         )
         return {"messages": 1, "rows": 0, "orders": 0}
-    messages = await _send_rows(buyer, rows)
+    messages = await _send_order_summaries(buyer, rows)
     return {
         "messages": messages,
         "rows": len(rows),

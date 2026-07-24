@@ -3,7 +3,12 @@ from datetime import date, datetime
 from decimal import Decimal
 from app.logic import build_alerts, due_warning, summary
 from app.models import PurchaseOrder
-from app.service import build_report_card, render_report, schedule_slot
+from app.service import (
+    build_order_summary_card,
+    build_report_card,
+    render_report,
+    schedule_slot,
+)
 
 
 class LogicTests(unittest.TestCase):
@@ -89,6 +94,23 @@ class LogicTests(unittest.TestCase):
         self.assertEqual(schedule_slot(buyer, monday), "2026-07-20T09:15")
         buyer["last_schedule_slot"] = "2026-07-20T09:15"
         self.assertIsNone(schedule_slot(buyer, monday))
+
+    def test_manual_card_aggregates_sku_rows_by_order(self):
+        rows = build_alerts(
+            [
+                self.order("PO-1", 15),
+                self.order("PO-1", 15, received=20),
+                self.order("PO-2", 10),
+            ],
+            date(2026, 7, 24), "小王", 3
+        )
+        card = build_order_summary_card("小王", rows, "https://example.test")
+        table = next(element for element in card["elements"] if element["tag"] == "table")
+        self.assertEqual(len(table["rows"]), 2)
+        po1 = next(row for row in table["rows"] if row["order_no"] == "PO-1")
+        self.assertEqual(po1["ordered_qty"], "200")
+        self.assertEqual(po1["received_qty"], "20")
+        self.assertEqual(po1["pending_qty"], "180")
 
 
 if __name__ == "__main__":
