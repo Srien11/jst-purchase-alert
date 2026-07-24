@@ -32,6 +32,21 @@ class MainRouteTests(unittest.TestCase):
             "{o.purchaser for o in orders if o.purchaser} | PROCUREMENT_MANAGERS",
             source,
         )
+        self.assertLess(
+            source.index("if is_procurement_manager(name):"),
+            source.index("orders = await fetch_orders()"),
+        )
+
+    def test_bound_browser_skips_repeated_oauth(self):
+        source = (Path(__file__).parents[1] / "app" / "main.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "purchase_alert_token: str | None = Cookie(None)", source
+        )
+        self.assertIn('"purchase_alert_token"', source)
+        self.assertIn("httponly=True", source)
+        self.assertIn("secure=True", source)
 
 
 if __name__ == "__main__":

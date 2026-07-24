@@ -3,7 +3,7 @@ from html import escape
 import httpx
 from urllib.parse import quote
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from fastapi import FastAPI, Form, Header, HTTPException
+from fastapi import Cookie, FastAPI, Form, Header, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 from .config import settings
@@ -80,6 +80,18 @@ def public_url(path: str) -> str:
     return f"{settings.app_base_url.rstrip('/')}/{path.lstrip('/')}"
 
 
+def remember_buyer(response: RedirectResponse, token: str) -> RedirectResponse:
+    response.set_cookie(
+        "purchase_alert_token",
+        token,
+        max_age=365 * 24 * 60 * 60,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+    )
+    return response
+
+
 class BuyerInput(BaseModel):
     purchaser: str
     feishu_open_id: str
@@ -101,9 +113,13 @@ def health():
 
 
 @app.get("/join")
-def join():
+def join(purchase_alert_token: str | None = Cookie(None)):
     db = connect(settings.database_path)
     try:
+        if purchase_alert_token and buyer_by_token(db, purchase_alert_token):
+            return RedirectResponse(
+                public_url(f"/subscribe/{purchase_alert_token}")
+            )
         state = create_oauth_state(db)
     finally:
         db.close()
@@ -131,6 +147,26 @@ async def join_callback(code: str, state: str):
         token = create_join_session(db, open_id, name)
     finally:
         db.close()
+    if is_procurement_manager(name):
+        manager_name = next(
+            manager
+            for manager in PROCUREMENT_MANAGERS
+            if normalize_person_name(manager) == normalize_person_name(name)
+        )
+        db = connect(settings.database_path)
+        try:
+            manage_token = upsert_buyer(
+                db, manager_name, open_id, is_manager=True
+            )
+            set_buyer_enabled(db, manage_token, True)
+        finally:
+            db.close()
+        return remember_buyer(
+            RedirectResponse(
+                public_url(f"/subscribe/{manage_token}"), status_code=303
+            ),
+            manage_token,
+        )
     try:
         orders = await fetch_orders()
     except Exception as exc:
@@ -194,7 +230,12 @@ async def join_confirm(token: str = Form(...), purchaser: str = Form(...)):
                 is_manager=is_procurement_manager(purchaser),
             )
             set_buyer_enabled(db, manage_token, True)
-            return RedirectResponse(public_url(f"/subscribe/{manage_token}"), status_code=303)
+            return remember_buyer(
+                RedirectResponse(
+                    public_url(f"/subscribe/{manage_token}"), status_code=303
+                ),
+                manage_token,
+            )
         request_id = create_join_request(
             db, session["open_id"], session["feishu_name"], purchaser
         )
