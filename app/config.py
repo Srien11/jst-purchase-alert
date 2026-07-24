@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     jst_access_token: str = ""
     feishu_app_id: str = ""
     feishu_app_secret: str = ""
+    feishu_admin_open_id: str = ""
+    feishu_admin_mobile: str = ""
 
     @property
     def warning_day_values(self) -> tuple[int, ...]:
