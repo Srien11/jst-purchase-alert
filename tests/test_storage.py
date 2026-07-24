@@ -47,6 +47,21 @@ class StorageTests(unittest.TestCase):
             finally:
                 db.close()
 
+    def test_manager_role_is_persisted_and_cannot_be_downgraded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = connect(str(Path(tmp) / "manager.db"))
+            try:
+                token = upsert_buyer(
+                    db, "吴子杰&茴香", "ou_manager", is_manager=True
+                )
+                self.assertEqual(buyer_by_token(db, token)["is_manager"], 1)
+                upsert_buyer(db, "吴子杰&茴香", "ou_manager_new")
+                buyer = buyer_by_token(db, token)
+                self.assertEqual(buyer["is_manager"], 1)
+                self.assertEqual(buyer["feishu_open_id"], "ou_manager_new")
+            finally:
+                db.close()
+
     def test_one_time_system_event_cannot_be_claimed_twice(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = connect(str(Path(tmp) / "events.db"))

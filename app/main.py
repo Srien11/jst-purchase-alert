@@ -9,11 +9,17 @@ from pydantic import BaseModel
 from .config import settings
 from .feishu import oauth_user, send_admin_message, send_message
 from .jushuitan import fetch_orders
-from .matching import unique_purchaser_match
+from .matching import normalize_person_name, unique_purchaser_match
 from .review import review_signature, valid_review_signature
-from .service import run_check, run_scheduled_checks, send_manual_report
+from .service import (
+    run_check,
+    run_scheduled_checks,
+    send_manager_report,
+    send_manual_report,
+)
 from .storage import (
     active_buyers,
+    all_buyers,
     buyer_by_token,
     claim_system_event,
     close_alert,
@@ -37,6 +43,15 @@ from .storage import (
     upsert_buyer,
 )
 
+PROCUREMENT_MANAGERS = {"吴子杰&茴香"}
+
+
+def is_procurement_manager(purchaser: str) -> bool:
+    normalized = normalize_person_name(purchaser)
+    return any(
+        normalized == normalize_person_name(manager)
+        for manager in PROCUREMENT_MANAGERS
+    )
 
 scheduler = AsyncIOScheduler(timezone=settings.timezone)
 ONE_TIME_BOUND_TEST = "bound-buyers-test-v1"
@@ -120,7 +135,9 @@ async def join_callback(code: str, state: str):
         orders = await fetch_orders()
     except Exception as exc:
         raise HTTPException(502, f"读取采购员列表失败：{exc}") from exc
-    purchasers = sorted({o.purchaser for o in orders if o.purchaser})
+    purchasers = sorted(
+        {o.purchaser for o in orders if o.purchaser} | PROCUREMENT_MANAGERS
+    )
     exact = unique_purchaser_match(name, purchasers)
     options = "".join(
         f'<option value="{escape(p)}"{" selected" if p == exact else ""}>{escape(p)}</option>'
@@ -153,7 +170,10 @@ background:#1677ff;color:white;font-weight:700}}p{{color:#607087;line-height:1.7
 @app.post("/join/confirm", response_class=HTMLResponse)
 async def join_confirm(token: str = Form(...), purchaser: str = Form(...)):
     try:
-        purchasers = {o.purchaser for o in await fetch_orders() if o.purchaser}
+        purchasers = (
+            {o.purchaser for o in await fetch_orders() if o.purchaser}
+            | PROCUREMENT_MANAGERS
+        )
     except Exception as exc:
         raise HTTPException(502, f"读取采购员列表失败：{exc}") from exc
     if purchaser not in purchasers:
@@ -167,7 +187,12 @@ async def join_confirm(token: str = Form(...), purchaser: str = Form(...)):
             session["feishu_name"], purchasers
         )
         if automatic_match == purchaser:
-            manage_token = upsert_buyer(db, purchaser, session["open_id"])
+            manage_token = upsert_buyer(
+                db,
+                purchaser,
+                session["open_id"],
+                is_manager=is_procurement_manager(purchaser),
+            )
             set_buyer_enabled(db, manage_token, True)
             return RedirectResponse(public_url(f"/subscribe/{manage_token}"), status_code=303)
         request_id = create_join_request(
@@ -202,7 +227,13 @@ def add_buyer(body: BuyerInput, x_admin_token: str | None = Header(None)):
     require_admin(x_admin_token)
     db = connect(settings.database_path)
     try:
-        token = upsert_buyer(db, body.purchaser.strip(), body.feishu_open_id.strip())
+        purchaser = body.purchaser.strip()
+        token = upsert_buyer(
+            db,
+            purchaser,
+            body.feishu_open_id.strip(),
+            is_manager=is_procurement_manager(purchaser),
+        )
     finally:
         db.close()
     return {"invite_url": f"{settings.app_base_url.rstrip('/')}/subscribe/{token}"}
@@ -386,7 +417,9 @@ async def test_feishu(
     return {"ok": True, "message": "测试消息已发送"}
 
 
-def notification_page(token: str, buyer, closed: list[str]) -> HTMLResponse:
+def notification_page(
+    token: str, buyer, closed: list[str], team_buyers: list[str]
+) -> HTMLResponse:
     purchaser = escape(buyer["purchaser"])
     enabled = bool(buyer["enabled"])
     status_text = "全部通知已开启" if enabled else "全部通知已关闭"
@@ -417,6 +450,20 @@ def notification_page(token: str, buyer, closed: list[str]) -> HTMLResponse:
         <button class="small secondary">恢复</button></form></li>"""
         for order_no in closed
     ) or '<li class="empty">暂无单独关闭的采购单</li>'
+    manager_options = "".join(
+        f'<option value="{escape(name)}">{escape(name)}</option>'
+        for name in team_buyers
+    )
+    manager_panel = ""
+    if buyer["is_manager"]:
+        manager_panel = f"""
+<section class="card manager-card"><div class="eyebrow">TEAM ACCESS</div>
+<h2>采购团队数据</h2>
+<p class="help">负责人专属权限。可筛选单个采购员，或获取全团队实时在途数据；结果只发送到你的飞书。</p>
+<form class="manager-form" method="post" action="{public_url(f'/subscribe/{token}/manager/fetch-now')}">
+<select name="purchaser"><option value="*">全部采购员</option>{manager_options}</select>
+<button onclick="this.disabled=true;this.form.submit()">筛选并发送给我</button>
+</form></section>"""
     return HTMLResponse(f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -442,6 +489,8 @@ cursor:pointer}} button.danger{{background:#fff0f0;color:#d93f46}} button.second
  h2{{font-size:18px;margin:0 0 14px}} .close-form{{display:flex;gap:10px;margin:12px 0 18px}}
  input,select{{min-width:0;flex:1;border:1px solid #dce3ed;border-radius:12px;padding:12px 14px;font-size:15px;background:white}}
  .schedule-form{{display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:10px;align-items:end}}
+ .manager-form{{display:grid;grid-template-columns:1fr auto;gap:10px}}
+ .manager-card{{border:1px solid #d9e9ff;background:linear-gradient(145deg,#fff,#f2f8ff)}}
  .field label{{display:block;color:#607087;font-size:13px;margin-bottom:6px}} .manual{{display:flex;gap:14px;align-items:center}}
 ul{{list-style:none;padding:0;margin:0}} li{{display:flex;justify-content:space-between;align-items:center;
 padding:13px 4px;border-top:1px solid #edf0f4}} li span{{display:block;color:#8792a4;font-size:12px;margin-top:4px}}
@@ -470,6 +519,7 @@ padding:13px 4px;border-top:1px solid #edf0f4}} li span{{display:block;color:#87
 <div class="manual"><p class="help">实时读取你名下全部未入库明细并发送飞书表格，不影响自动提醒记录。</p>
 <form method="post" action="{public_url(f'/subscribe/{token}/fetch-now')}">
 <button onclick="this.disabled=true;this.form.submit()">立即发送给我</button></form></div></section>
+{manager_panel}
 <section class="card"><h2>单据通知管理</h2>
 <form class="close-form" method="post" action="{public_url(f'/subscribe/{token}/orders/close')}">
 <input name="order_no" required placeholder="输入采购单号，例如 PO-20260701">
@@ -486,11 +536,12 @@ def subscribe(token: str):
     try:
         buyer = buyer_by_token(db, token)
         closed = sorted(closed_order_numbers(db, buyer["purchaser"])) if buyer else []
+        team_buyers = [row["purchaser"] for row in all_buyers(db)] if buyer else []
     finally:
         db.close()
     if not buyer:
         raise HTTPException(404, "链接无效")
-    return notification_page(token, buyer, closed)
+    return notification_page(token, buyer, closed, team_buyers)
 
 
 @app.post("/subscribe/{token}/notifications/{action}")
@@ -552,6 +603,33 @@ async def fetch_now(token: str):
         <div style="max-width:520px;margin:12vh auto;font-family:sans-serif;padding:28px">
         <h2>已发送到飞书</h2>
         <p>共 {result['rows']} 条在途明细，{result['orders']} 张采购单，
+        发送 {result['messages']} 张卡片。</p><p><a href="{back}">返回通知中心</a></p></div>"""
+    )
+
+
+@app.post("/subscribe/{token}/manager/fetch-now", response_class=HTMLResponse)
+async def manager_fetch_now(token: str, purchaser: str = Form("*")):
+    db = connect(settings.database_path)
+    try:
+        buyer = buyer_by_token(db, token)
+    finally:
+        db.close()
+    if not buyer:
+        raise HTTPException(404, "链接无效")
+    if not buyer["is_manager"]:
+        raise HTTPException(403, "仅采购部负责人可查看团队数据")
+    try:
+        result = await send_manager_report(token, purchaser)
+    except KeyError as exc:
+        raise HTTPException(400, "筛选的采购员不存在") from exc
+    except (httpx.HTTPError, RuntimeError) as exc:
+        raise HTTPException(502, f"团队数据获取失败：{exc}") from exc
+    back = public_url(f"/subscribe/{token}")
+    return HTMLResponse(
+        f"""<meta name="viewport" content="width=device-width,initial-scale=1">
+        <div style="max-width:520px;margin:12vh auto;font-family:sans-serif;padding:28px">
+        <h2>团队数据已发送到飞书</h2>
+        <p>覆盖 {result['buyers']} 位采购员、{result['orders']} 张采购单，
         发送 {result['messages']} 张卡片。</p><p><a href="{back}">返回通知中心</a></p></div>"""
     )
 

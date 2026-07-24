@@ -64,6 +64,7 @@ def connect(path: str) -> sqlite3.Connection:
         "schedule_minute": "INTEGER NOT NULL DEFAULT 0",
         "schedule_weekday": "INTEGER NOT NULL DEFAULT 0",
         "last_schedule_slot": "TEXT NOT NULL DEFAULT ''",
+        "is_manager": "INTEGER NOT NULL DEFAULT 0",
     }
     for name, definition in migrations.items():
         if name not in columns:
@@ -72,14 +73,21 @@ def connect(path: str) -> sqlite3.Connection:
     return db
 
 
-def upsert_buyer(db: sqlite3.Connection, purchaser: str, feishu_open_id: str) -> str:
+def upsert_buyer(
+    db: sqlite3.Connection,
+    purchaser: str,
+    feishu_open_id: str,
+    is_manager: bool = False,
+) -> str:
     row = db.execute("SELECT token FROM buyers WHERE purchaser=?", (purchaser,)).fetchone()
     token = row["token"] if row else secrets.token_urlsafe(24)
     db.execute(
-        """INSERT INTO buyers(purchaser, token, feishu_open_id)
-           VALUES(?,?,?)
-           ON CONFLICT(purchaser) DO UPDATE SET feishu_open_id=excluded.feishu_open_id""",
-        (purchaser, token, feishu_open_id),
+        """INSERT INTO buyers(purchaser, token, feishu_open_id, is_manager)
+           VALUES(?,?,?,?)
+           ON CONFLICT(purchaser) DO UPDATE SET
+             feishu_open_id=excluded.feishu_open_id,
+             is_manager=MAX(buyers.is_manager, excluded.is_manager)""",
+        (purchaser, token, feishu_open_id, int(is_manager)),
     )
     db.commit()
     return token
@@ -100,6 +108,10 @@ def set_buyer_enabled(db: sqlite3.Connection, token: str, enabled: bool):
 
 def active_buyers(db: sqlite3.Connection):
     return db.execute("SELECT * FROM buyers WHERE enabled=1 ORDER BY purchaser").fetchall()
+
+
+def all_buyers(db: sqlite3.Connection):
+    return db.execute("SELECT * FROM buyers ORDER BY purchaser").fetchall()
 
 
 def update_buyer_schedule(

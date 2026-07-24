@@ -231,14 +231,22 @@ async def _send_rows(buyer, rows) -> int:
 
 async def _send_order_summaries(buyer, rows) -> int:
     manage_url = f"{settings.app_base_url.rstrip('/')}/subscribe/{buyer['token']}"
+    return await _send_order_summaries_to(
+        buyer["feishu_open_id"], buyer["purchaser"], rows, manage_url
+    )
+
+
+async def _send_order_summaries_to(
+    feishu_open_id: str, purchaser: str, rows, manage_url: str
+) -> int:
     order_numbers = list(dict.fromkeys(row.order.order_no for row in rows))
     messages = 0
     for start in range(0, len(order_numbers), CARD_TABLE_ROW_LIMIT):
         selected = set(order_numbers[start:start + CARD_TABLE_ROW_LIMIT])
         chunk = [row for row in rows if row.order.order_no in selected]
         await send_card(
-            buyer["feishu_open_id"],
-            build_order_summary_card(buyer["purchaser"], chunk, manage_url),
+            feishu_open_id,
+            build_order_summary_card(purchaser, chunk, manage_url),
         )
         messages += 1
     return messages
@@ -329,4 +337,51 @@ async def send_manual_report(token: str) -> dict:
         "messages": messages,
         "rows": len(rows),
         "orders": len({row.order.order_no for row in rows}),
+    }
+
+
+async def send_manager_report(token: str, purchaser: str = "*") -> dict:
+    orders = await fetch_orders()
+    db = connect(settings.database_path)
+    try:
+        row = buyer_by_token(db, token)
+        if not row or not row["is_manager"]:
+            raise PermissionError(token)
+        manager = dict(row)
+    finally:
+        db.close()
+    available = sorted({order.purchaser for order in orders if order.purchaser})
+    if purchaser != "*" and purchaser not in available:
+        raise KeyError(purchaser)
+    selected = available if purchaser == "*" else [purchaser]
+    messages = rows_count = order_count = buyers_count = 0
+    manage_url = f"{settings.app_base_url.rstrip('/')}/subscribe/{token}"
+    for name in selected:
+        rows = [
+            row
+            for row in build_alerts(
+                orders, date.today(), name, settings.travel_buffer_days
+            )
+            if not row.order.is_received
+        ]
+        if not rows:
+            continue
+        buyers_count += 1
+        rows_count += len(rows)
+        order_count += len({row.order.order_no for row in rows})
+        messages += await _send_order_summaries_to(
+            manager["feishu_open_id"], name, rows, manage_url
+        )
+    if not messages:
+        await send_message(
+            manager["feishu_open_id"],
+            "采购团队在途数据",
+            "当前筛选范围内没有未全部入库的在途采购明细。",
+        )
+        messages = 1
+    return {
+        "messages": messages,
+        "rows": rows_count,
+        "orders": order_count,
+        "buyers": buyers_count,
     }
