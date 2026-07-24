@@ -4,10 +4,23 @@ services:
     restart: unless-stopped
     env_file: .env
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - alert-data:/data
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik-network"
+      - "traefik.http.routers.purchase-alert.rule=Host(`purchase-alert.kktree.cn`)"
+      - "traefik.http.routers.purchase-alert.entrypoints=websecure"
+      - "traefik.http.routers.purchase-alert.tls=true"
+      - "traefik.http.routers.purchase-alert.tls.certresolver=myresolver"
+      - "traefik.http.services.purchase-alert.loadbalancer.server.port=8000"
+    networks:
+      - traefik-network
 
 volumes:
   alert-data:
 
+networks:
+  traefik-network:
+    external: true
