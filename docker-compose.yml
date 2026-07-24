@@ -1,0 +1,13 @@
+services:
+  purchase-alert:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - alert-data:/data
+
+volumes:
+  alert-data:
+
