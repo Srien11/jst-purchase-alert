@@ -107,3 +107,26 @@ async def send_message(open_id: str, title: str, content: str):
         body = response.json()
         if body.get("code") != 0:
             raise RuntimeError(f"飞书发送失败: {body.get('msg')}")
+
+
+async def send_card(open_id: str, card: dict):
+    if settings.demo_mode:
+        return {"demo": True, "open_id": open_id, "card": card}
+    if not settings.feishu_app_id or not settings.feishu_app_secret:
+        raise RuntimeError("尚未配置飞书应用凭据")
+    async with httpx.AsyncClient(timeout=30) as client:
+        token = await _tenant_token(client)
+        response = await client.post(
+            "https://open.feishu.cn/open-apis/im/v1/messages",
+            params={"receive_id_type": "open_id"},
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "receive_id": open_id,
+                "msg_type": "interactive",
+                "content": json.dumps(card, ensure_ascii=False),
+            },
+        )
+        response.raise_for_status()
+        body = response.json()
+        if body.get("code") != 0:
+            raise RuntimeError(f"飞书卡片发送失败: {body.get('msg')}")
