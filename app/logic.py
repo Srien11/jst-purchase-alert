@@ -8,7 +8,7 @@ MAX_EFFECTIVE_DAYS = 15
 
 def classify(order: PurchaseOrder, today: date, travel_buffer_days: int) -> AlertRow:
     calendar_days = (order.delivery_date - today).days
-    effective_days = calendar_days - travel_buffer_days
+    effective_days = calendar_days
     if order.is_received:
         level, advice = "绿", "已全部入库，无需跟进"
     elif effective_days <= 6:
@@ -29,7 +29,7 @@ def build_alerts(
         if (
             o.purchaser == purchaser
             and MIN_EFFECTIVE_DAYS
-            <= (o.delivery_date - today).days - travel_buffer_days
+            <= (o.delivery_date - today).days
             <= MAX_EFFECTIVE_DAYS
         )
     ]

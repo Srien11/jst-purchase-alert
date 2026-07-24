@@ -31,7 +31,7 @@ def render_report(purchaser: str, rows, manage_url: str) -> str:
         f"手动关闭/恢复预警：{manage_url}",
         "",
         "【在途明细表】",
-        "等级｜采购单｜供应商｜商品/SKU｜交期｜有效剩余（已减3天）｜在途数量",
+        "等级｜采购单｜供应商｜商品/SKU｜交期｜剩余天数｜在途数量",
         "────────────────────────",
     ]
     for r in rows:
@@ -83,7 +83,7 @@ def build_report_card(purchaser: str, rows, manage_url: str) -> dict:
                     f"**{stat['ordered_qty']} / {stat['received_qty']} / {stat['pending_qty']}**\n"
                     f"🔴 0–6天 {stat['red']} 条　🟡 7–10天 {stat['yellow']} 条　"
                     f"🟢 11–15天 {stat['green']} 条\n"
-                    "**有效剩余天数均已扣除 3 天运输时间**"
+                    "**剩余天数按交期直接计算，不再扣减运输时间**"
                 ),
             },
             {"tag": "hr"},
@@ -98,7 +98,7 @@ def build_report_card(purchaser: str, rows, manage_url: str) -> dict:
                     {"name": "supplier", "display_name": "供应商", "data_type": "text", "width": "auto"},
                     {"name": "item", "display_name": "商品", "data_type": "text", "width": "auto"},
                     {"name": "delivery_date", "display_name": "交期", "data_type": "text", "width": "auto"},
-                    {"name": "days_left", "display_name": "有效剩余（已减3天）", "data_type": "text", "width": "auto"},
+                    {"name": "days_left", "display_name": "剩余天数", "data_type": "text", "width": "auto"},
                     {"name": "pending_qty", "display_name": "在途数量", "data_type": "text", "width": "auto"},
                 ],
                 "rows": table_rows,
@@ -164,7 +164,7 @@ def build_order_summary_card(purchaser: str, rows, manage_url: str) -> dict:
                     f"采购单：**{len(grouped)}** 单　SKU 明细：**{len(rows)}** 条\n"
                     "表格已按采购单聚合，每张采购单仅显示一行。\n"
                     "🔴 0–6天　🟡 7–10天　🟢 11–15天\n"
-                    "**有效剩余天数均已扣除 3 天运输时间**"
+                    "**剩余天数按交期直接计算，不再扣减运输时间**"
                 ),
             },
             {"tag": "hr"},
@@ -180,7 +180,7 @@ def build_order_summary_card(purchaser: str, rows, manage_url: str) -> dict:
                     {"name": "item_names", "display_name": "商品名称", "data_type": "text", "width": "auto"},
                     {"name": "sku_count", "display_name": "SKU数", "data_type": "text", "width": "auto"},
                     {"name": "delivery_date", "display_name": "最早交期", "data_type": "text", "width": "auto"},
-                    {"name": "days_left", "display_name": "最短有效剩余（已减3天）", "data_type": "text", "width": "auto"},
+                    {"name": "days_left", "display_name": "最短剩余天数", "data_type": "text", "width": "auto"},
                     {"name": "ordered_qty", "display_name": "订购", "data_type": "text", "width": "auto"},
                     {"name": "received_qty", "display_name": "已入库", "data_type": "text", "width": "auto"},
                     {"name": "pending_qty", "display_name": "在途", "data_type": "text", "width": "auto"},

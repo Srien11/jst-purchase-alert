@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     timezone: str = "Asia/Shanghai"
     check_hour: int = 9
     check_minute: int = 0
-    travel_buffer_days: int = 3
+    travel_buffer_days: int = 0
     warning_days: str = "15,10,6"
     jst_purchase_api_url: str = "https://openapi.jushuitan.com/open/purchase/query"
     jst_purchase_in_api_url: str = (

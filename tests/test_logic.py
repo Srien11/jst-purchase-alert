@@ -25,9 +25,9 @@ class LogicTests(unittest.TestCase):
     def test_transport_buffer_and_levels(self):
         rows = build_alerts(
             [
-                self.order("GREEN", 18),
-                self.order("YELLOW", 13),
-                self.order("RED", 9),
+                self.order("GREEN", 15),
+                self.order("YELLOW", 10),
+                self.order("RED", 6),
             ],
             date(2026, 7, 24), "小王", 3
         )
@@ -39,7 +39,7 @@ class LogicTests(unittest.TestCase):
 
     def test_warning_days(self):
         rows = build_alerts(
-            [self.order("A", 18), self.order("B", 13), self.order("C", 9)],
+            [self.order("A", 15), self.order("B", 10), self.order("C", 6)],
             date(2026, 7, 24), "小王", 3
         )
         self.assertEqual(
@@ -50,9 +50,9 @@ class LogicTests(unittest.TestCase):
     def test_alerts_exclude_days_outside_zero_to_fifteen(self):
         rows = build_alerts(
             [
-                self.order("OVERDUE", 2),
+                self.order("OVERDUE", -1),
                 self.order("CURRENT", 11),
-                self.order("FAR-FUTURE", 19),
+                self.order("FAR-FUTURE", 16),
             ],
             date(2026, 7, 24), "小王", 3
         )
@@ -64,12 +64,12 @@ class LogicTests(unittest.TestCase):
     def test_level_boundaries_are_non_overlapping(self):
         rows = build_alerts(
             [
-                self.order("ZERO", 3),
-                self.order("SIX", 9),
-                self.order("SEVEN", 10),
-                self.order("TEN", 13),
-                self.order("ELEVEN", 14),
-                self.order("FIFTEEN", 18),
+                self.order("ZERO", 0),
+                self.order("SIX", 6),
+                self.order("SEVEN", 7),
+                self.order("TEN", 10),
+                self.order("ELEVEN", 11),
+                self.order("FIFTEEN", 15),
             ],
             date(2026, 7, 24), "小王", 3,
         )
@@ -99,7 +99,7 @@ class LogicTests(unittest.TestCase):
             ],
             date(2026, 7, 24), "小王", 3
         )
-        report = render_report("小王", due_warning(rows, (12, 7, 3)), "https://example.test")
+        report = render_report("小王", due_warning(rows, (15, 10, 6)), "https://example.test")
         self.assertIn("DUE", report)
         self.assertNotIn("NOT-DUE", report)
         self.assertNotIn("RECEIVED", report)
@@ -112,7 +112,7 @@ class LogicTests(unittest.TestCase):
             date(2026, 7, 24), "小王", 3
         )
         card = build_report_card(
-            "小王", due_warning(rows, (12, 7, 3)), "https://example.test"
+            "小王", due_warning(rows, (15, 10, 6)), "https://example.test"
         )
         self.assertEqual(card["header"]["title"]["content"], "采购交期预警｜小王")
         table = next(e for e in card["elements"] if e["tag"] == "table")
