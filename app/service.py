@@ -1,3 +1,4 @@
+import asyncio
 from datetime import date, datetime
 from .config import settings
 from .feishu import send_card, send_message
@@ -380,6 +381,7 @@ async def send_manager_report(
     selected = available if purchaser == "*" else [purchaser]
     messages = rows_count = order_count = buyers_count = 0
     manage_url = f"{settings.app_base_url.rstrip('/')}/subscribe/{token}"
+    send_jobs = []
     for name in selected:
         rows = _current_in_transit([
             row
@@ -393,9 +395,13 @@ async def send_manager_report(
         buyers_count += 1
         rows_count += len(rows)
         order_count += len({row.order.order_no for row in rows})
-        messages += await _send_order_summaries_to(
-            manager["feishu_open_id"], name, rows, manage_url
+        send_jobs.append(
+            _send_order_summaries_to(
+                manager["feishu_open_id"], name, rows, manage_url
+            )
         )
+    if send_jobs:
+        messages = sum(await asyncio.gather(*send_jobs))
     if not messages:
         await send_message(
             manager["feishu_open_id"],

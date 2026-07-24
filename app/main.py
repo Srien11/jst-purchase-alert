@@ -4,7 +4,7 @@ import json
 import httpx
 from urllib.parse import quote
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from fastapi import Cookie, FastAPI, Form, Header, HTTPException
+from fastapi import BackgroundTasks, Cookie, FastAPI, Form, Header, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 from .config import settings
@@ -609,7 +609,11 @@ async def fetch_now(token: str):
 
 
 @app.post("/subscribe/{token}/manager/fetch-now", response_class=HTMLResponse)
-async def manager_fetch_now(token: str, purchaser: str = Form("*")):
+async def manager_fetch_now(
+    background_tasks: BackgroundTasks,
+    token: str,
+    purchaser: str = Form("*"),
+):
     db = connect(settings.database_path)
     try:
         buyer = buyer_by_token(db, token)
@@ -619,19 +623,14 @@ async def manager_fetch_now(token: str, purchaser: str = Form("*")):
         raise HTTPException(404, "链接无效")
     if not buyer["is_manager"]:
         raise HTTPException(403, "仅采购部负责人可查看团队数据")
-    try:
-        result = await send_manager_report(token, purchaser)
-    except KeyError as exc:
-        raise HTTPException(400, "筛选的采购员不存在") from exc
-    except (httpx.HTTPError, RuntimeError) as exc:
-        raise HTTPException(502, f"团队数据获取失败：{exc}") from exc
+    background_tasks.add_task(send_manager_report, token, purchaser)
     back = public_url(f"/subscribe/{token}")
     return HTMLResponse(
         f"""<meta name="viewport" content="width=device-width,initial-scale=1">
         <div style="max-width:520px;margin:12vh auto;font-family:sans-serif;padding:28px">
-        <h2>团队数据已发送到飞书</h2>
-        <p>覆盖 {result['buyers']} 位采购员、{result['orders']} 张采购单，
-        发送 {result['messages']} 张卡片。</p><p><a href="{back}">返回通知中心</a></p></div>"""
+        <h2>实时数据任务已提交</h2>
+        <p>系统正在从聚水潭读取并按采购员拆分，完成后会发送到你的飞书，
+        无需停留在此页面等待。</p><p><a href="{back}">返回通知中心</a></p></div>"""
     )
 
 
