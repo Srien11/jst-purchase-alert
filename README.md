@@ -55,3 +55,16 @@ curl -X POST https://你的域名/admin/run \
 
 使用企业自建应用机器人，并开通发送消息权限。需要 `APP_ID`、`APP_SECRET`，
 以及每位采购员的 `open_id`。服务不会把这些凭据写入代码或日志。
+
+## 上线后测试飞书
+
+配置飞书应用凭据后，可通过管理员专用接口立即发送一条测试消息：
+
+```bash
+curl -X POST https://你的域名/admin/test-feishu \
+  -H "X-Admin-Token: .env里的APP_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"feishu_open_id":"ou_xxx","message":"采购预警服务测试成功"}'
+```
+
+该接口不会触发采购预警或写入提醒记录。未携带正确管理员令牌时返回 `401`。
