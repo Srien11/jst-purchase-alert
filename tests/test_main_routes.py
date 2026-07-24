@@ -36,6 +36,7 @@ class MainRouteTests(unittest.TestCase):
             source.index("if is_procurement_manager(name):"),
             source.index("orders = await fetch_orders()"),
         )
+        self.assertIn('"刘智博&木耳"', source)
 
     def test_bound_browser_skips_repeated_oauth(self):
         source = (Path(__file__).parents[1] / "app" / "main.py").read_text(

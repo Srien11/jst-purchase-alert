@@ -43,7 +43,7 @@ from .storage import (
     upsert_buyer,
 )
 
-PROCUREMENT_MANAGERS = {"吴子杰&茴香"}
+PROCUREMENT_MANAGERS = {"吴子杰&茴香", "刘智博&木耳"}
 
 
 def is_procurement_manager(purchaser: str) -> bool:
