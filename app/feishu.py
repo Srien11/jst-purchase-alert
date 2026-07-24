@@ -52,6 +52,35 @@ async def oauth_user(code: str) -> dict:
         return user_body["data"]
 
 
+async def admin_open_id() -> str:
+    if settings.feishu_admin_open_id:
+        return settings.feishu_admin_open_id
+    if not settings.feishu_admin_mobile:
+        return ""
+    async with httpx.AsyncClient(timeout=30) as client:
+        token = await _tenant_token(client)
+        response = await client.post(
+            "https://open.feishu.cn/open-apis/contact/v3/users/batch_get_id",
+            params={"user_id_type": "open_id"},
+            headers={"Authorization": f"Bearer {token}"},
+            json={"mobiles": [settings.feishu_admin_mobile]},
+        )
+        response.raise_for_status()
+        body = response.json()
+        if body.get("code") != 0:
+            raise RuntimeError(f"飞书管理员身份查询失败: {body.get('msg')}")
+        users = body.get("data", {}).get("user_list", [])
+        return str(users[0].get("user_id") or "") if users else ""
+
+
+async def send_admin_message(title: str, content: str) -> bool:
+    open_id = await admin_open_id()
+    if not open_id:
+        return False
+    await send_message(open_id, title, content)
+    return True
+
+
 async def send_message(open_id: str, title: str, content: str):
     if settings.demo_mode:
         return {"demo": True, "open_id": open_id, "title": title, "content": content}
