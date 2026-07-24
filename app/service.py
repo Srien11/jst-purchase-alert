@@ -123,6 +123,11 @@ def build_order_summary_card(purchaser: str, rows, manage_url: str) -> dict:
         orders = [row.order for row in order_rows]
         most_urgent = min(order_rows, key=lambda row: row.effective_days_left)
         suppliers = sorted({order.supplier for order in orders if order.supplier})
+        item_names = sorted({
+            order.item_name or order.sku
+            for order in orders
+            if order.item_name or order.sku
+        })
         table_rows.append({
             "level": (
                 "🔴 紧急" if most_urgent.level == "红"
@@ -131,6 +136,7 @@ def build_order_summary_card(purchaser: str, rows, manage_url: str) -> dict:
             ),
             "order_no": order_no,
             "supplier": "、".join(suppliers),
+            "item_names": "、".join(item_names),
             "sku_count": str(len({order.sku for order in orders})),
             "delivery_date": str(min(order.delivery_date for order in orders)),
             "days_left": f"{most_urgent.effective_days_left} 天",
@@ -167,6 +173,7 @@ def build_order_summary_card(purchaser: str, rows, manage_url: str) -> dict:
                     {"name": "level", "display_name": "等级", "data_type": "text", "width": "auto"},
                     {"name": "order_no", "display_name": "采购单", "data_type": "text", "width": "auto"},
                     {"name": "supplier", "display_name": "供应商", "data_type": "text", "width": "auto"},
+                    {"name": "item_names", "display_name": "商品名称", "data_type": "text", "width": "auto"},
                     {"name": "sku_count", "display_name": "SKU数", "data_type": "text", "width": "auto"},
                     {"name": "delivery_date", "display_name": "最早交期", "data_type": "text", "width": "auto"},
                     {"name": "days_left", "display_name": "最短剩余", "data_type": "text", "width": "auto"},

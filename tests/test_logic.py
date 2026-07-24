@@ -13,11 +13,13 @@ from app.service import (
 
 
 class LogicTests(unittest.TestCase):
-    def order(self, no, days, received=0, purchaser="小王"):
+    def order(
+        self, no, days, received=0, purchaser="小王", sku="", item_name=""
+    ):
         return PurchaseOrder(
             no, purchaser, "供应商A", date(2026, 7, 24).fromordinal(
                 date(2026, 7, 24).toordinal() + days
-            ), Decimal("100"), Decimal(str(received))
+            ), Decimal("100"), Decimal(str(received)), sku, item_name
         )
 
     def test_transport_buffer_and_levels(self):
@@ -138,8 +140,10 @@ class LogicTests(unittest.TestCase):
     def test_manual_card_aggregates_sku_rows_by_order(self):
         rows = build_alerts(
             [
-                self.order("PO-1", 15),
-                self.order("PO-1", 15, received=20),
+                self.order("PO-1", 15, sku="SKU-1", item_name="商品甲"),
+                self.order(
+                    "PO-1", 15, received=20, sku="SKU-2", item_name="商品乙"
+                ),
                 self.order("PO-2", 10),
             ],
             date(2026, 7, 24), "小王", 3
@@ -148,6 +152,7 @@ class LogicTests(unittest.TestCase):
         table = next(element for element in card["elements"] if element["tag"] == "table")
         self.assertEqual(len(table["rows"]), 2)
         po1 = next(row for row in table["rows"] if row["order_no"] == "PO-1")
+        self.assertEqual(po1["item_names"], "商品乙、商品甲")
         self.assertEqual(po1["ordered_qty"], "200")
         self.assertEqual(po1["received_qty"], "20")
         self.assertEqual(po1["pending_qty"], "180")
