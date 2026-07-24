@@ -10,6 +10,7 @@ from .config import settings
 from .feishu import oauth_user, send_admin_message, send_message
 from .jushuitan import fetch_orders
 from .matching import unique_purchaser_match
+from .review import review_signature, valid_review_signature
 from .service import run_check
 from .storage import (
     buyer_by_token,
@@ -22,8 +23,10 @@ from .storage import (
     create_oauth_state,
     enable_by_token,
     approve_join_request,
+    join_request_by_id,
     join_session,
     pending_join_requests,
+    reject_join_request,
     reopen_alert,
     set_buyer_enabled,
     upsert_buyer,
@@ -169,13 +172,17 @@ async def join_confirm(token: str = Form(...), purchaser: str = Form(...)):
         db.close()
     if settings.feishu_admin_open_id or settings.feishu_admin_mobile:
         try:
+            review_url = public_url(
+                f"/admin/review/{request_id}?sig="
+                f"{review_signature(request_id, settings.app_admin_token)}"
+            )
             await send_admin_message(
                 "采购预警开通申请待审核",
                 (
                     f"申请编号：{request_id}\n"
                     f"飞书姓名：{session['feishu_name']}\n"
                     f"申请采购员：{purchaser}\n"
-                    "姓名无法安全自动匹配，请管理员审核。"
+                    f"姓名无法安全自动匹配，请管理员审核。\n{review_url}"
                 ),
             )
         except (httpx.HTTPError, RuntimeError):
@@ -217,6 +224,71 @@ def approve_join(request_id: int, x_admin_token: str | None = Header(None)):
     if not token:
         raise HTTPException(404, "待审核申请不存在")
     return {"ok": True, "manage_url": f"{settings.app_base_url}/subscribe/{token}"}
+
+
+@app.get("/admin/review/{request_id}", response_class=HTMLResponse)
+def review_join_request(request_id: int, sig: str):
+    if not valid_review_signature(request_id, sig, settings.app_admin_token):
+        raise HTTPException(403, "审核链接无效")
+    db = connect(settings.database_path)
+    try:
+        request = join_request_by_id(db, request_id)
+    finally:
+        db.close()
+    if not request:
+        raise HTTPException(404, "申请不存在")
+    status = escape(request["status"])
+    disabled = " disabled" if status != "pending" else ""
+    approve_url = public_url(f"/admin/review/{request_id}/approve")
+    reject_url = public_url(f"/admin/review/{request_id}/reject")
+    return HTMLResponse(
+        f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>审核采购预警开通</title><style>
+body{{font-family:"PingFang SC","Microsoft YaHei",sans-serif;background:#f4f7fb;color:#172033}}
+.card{{max-width:560px;margin:8vh auto;background:white;border-radius:22px;padding:30px;
+box-shadow:0 18px 60px #29476818}}.row{{padding:12px 0;border-bottom:1px solid #edf1f6}}
+.actions{{display:flex;gap:12px;margin-top:24px}}form{{flex:1}}button{{width:100%;padding:13px;
+border:0;border-radius:12px;color:white;font-weight:700;background:#1677ff}}
+.reject{{background:#e5484d}}button:disabled{{background:#aab4c3}}</style></head>
+<body><main class="card"><h1>开通申请审核</h1>
+<div class="row">申请编号：{request_id}</div>
+<div class="row">飞书姓名：{escape(request["feishu_name"])}</div>
+<div class="row">聚水潭采购员：{escape(request["purchaser"])}</div>
+<div class="row">当前状态：{status}</div><div class="actions">
+<form method="post" action="{approve_url}"><input type="hidden" name="sig" value="{escape(sig)}">
+<button{disabled}>同意开通</button></form>
+<form method="post" action="{reject_url}"><input type="hidden" name="sig" value="{escape(sig)}">
+<button class="reject"{disabled}>拒绝</button></form></div></main></body></html>"""
+    )
+
+
+@app.post("/admin/review/{request_id}/approve", response_class=HTMLResponse)
+def approve_join_from_page(request_id: int, sig: str = Form(...)):
+    if not valid_review_signature(request_id, sig, settings.app_admin_token):
+        raise HTTPException(403, "审核链接无效")
+    db = connect(settings.database_path)
+    try:
+        token = approve_join_request(db, request_id)
+    finally:
+        db.close()
+    if not token:
+        raise HTTPException(409, "申请已处理或不存在")
+    return HTMLResponse("<h2>已同意开通</h2><p>该采购员的预警通知已启用。</p>")
+
+
+@app.post("/admin/review/{request_id}/reject", response_class=HTMLResponse)
+def reject_join_from_page(request_id: int, sig: str = Form(...)):
+    if not valid_review_signature(request_id, sig, settings.app_admin_token):
+        raise HTTPException(403, "审核链接无效")
+    db = connect(settings.database_path)
+    try:
+        rejected = reject_join_request(db, request_id)
+    finally:
+        db.close()
+    if not rejected:
+        raise HTTPException(409, "申请已处理或不存在")
+    return HTMLResponse("<h2>已拒绝申请</h2><p>未给该申请人开通预警。</p>")
 
 
 @app.post("/admin/run")
