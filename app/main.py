@@ -1,19 +1,28 @@
 from contextlib import asynccontextmanager
 from html import escape
 import httpx
+from urllib.parse import quote
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI, Form, Header, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 from .config import settings
-from .feishu import send_message
+from .feishu import oauth_user, send_message
+from .jushuitan import fetch_orders
 from .service import run_check
 from .storage import (
     buyer_by_token,
     close_alert,
     closed_order_numbers,
     connect,
+    consume_oauth_state,
+    create_join_request,
+    create_join_session,
+    create_oauth_state,
     enable_by_token,
+    approve_join_request,
+    join_session,
+    pending_join_requests,
     reopen_alert,
     set_buyer_enabled,
     upsert_buyer,
@@ -63,6 +72,98 @@ def health():
     return {"ok": True}
 
 
+@app.get("/join")
+def join():
+    db = connect(settings.database_path)
+    try:
+        state = create_oauth_state(db)
+    finally:
+        db.close()
+    callback = f"{settings.app_base_url.rstrip('/')}/join/callback"
+    url = (
+        "https://open.feishu.cn/open-apis/authen/v1/index"
+        f"?app_id={quote(settings.feishu_app_id)}"
+        f"&redirect_uri={quote(callback, safe='')}"
+        f"&state={quote(state)}"
+    )
+    return RedirectResponse(url)
+
+
+@app.get("/join/callback", response_class=HTMLResponse)
+async def join_callback(code: str, state: str):
+    db = connect(settings.database_path)
+    try:
+        if not consume_oauth_state(db, state):
+            raise HTTPException(400, "授权已失效，请重新打开开通链接")
+        user = await oauth_user(code)
+        open_id = str(user.get("open_id") or "")
+        name = str(user.get("name") or "").strip()
+        if not open_id or not name:
+            raise HTTPException(400, "飞书未返回有效用户身份")
+        token = create_join_session(db, open_id, name)
+    finally:
+        db.close()
+    try:
+        orders = await fetch_orders()
+    except Exception as exc:
+        raise HTTPException(502, f"读取采购员列表失败：{exc}") from exc
+    purchasers = sorted({o.purchaser for o in orders if o.purchaser})
+    exact = next((p for p in purchasers if p.strip() == name), None)
+    options = "".join(
+        f'<option value="{escape(p)}"{" selected" if p == exact else ""}>{escape(p)}</option>'
+        for p in purchasers
+    )
+    hint = (
+        "姓名已与聚水潭采购员匹配，确认后立即开通。"
+        if exact
+        else "未找到同名采购员，请选择对应姓名；提交后由管理员审核。"
+    )
+    return HTMLResponse(
+        f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>开通采购预警</title><style>
+body{{font-family:"PingFang SC","Microsoft YaHei",sans-serif;background:#f4f7fb;color:#172033}}
+.card{{max-width:560px;margin:8vh auto;background:white;border-radius:22px;padding:30px;
+box-shadow:0 18px 60px #29476818}}h1{{margin-top:0}}label{{display:block;margin:22px 0 8px}}
+select,button{{width:100%;padding:13px;border-radius:12px;font-size:16px}}
+select{{border:1px solid #dce3ed;background:white}}button{{margin-top:20px;border:0;
+background:#1677ff;color:white;font-weight:700}}p{{color:#607087;line-height:1.7}}</style>
+</head><body><main class="card"><h1>开通采购交期预警</h1>
+<p>飞书用户：<strong>{escape(name)}</strong></p><p>{escape(hint)}</p>
+<form method="post" action="/join/confirm">
+<input type="hidden" name="token" value="{escape(token)}">
+<label>聚水潭采购员</label><select name="purchaser" required>{options}</select>
+<button>确认开通</button></form></main></body></html>"""
+    )
+
+
+@app.post("/join/confirm", response_class=HTMLResponse)
+async def join_confirm(token: str = Form(...), purchaser: str = Form(...)):
+    try:
+        purchasers = {o.purchaser for o in await fetch_orders() if o.purchaser}
+    except Exception as exc:
+        raise HTTPException(502, f"读取采购员列表失败：{exc}") from exc
+    if purchaser not in purchasers:
+        raise HTTPException(400, "采购员不存在或当前不可用")
+    db = connect(settings.database_path)
+    try:
+        session = join_session(db, token)
+        if not session:
+            raise HTTPException(400, "确认页面已过期，请重新开通")
+        if session["feishu_name"].strip() == purchaser.strip():
+            manage_token = upsert_buyer(db, purchaser, session["open_id"])
+            set_buyer_enabled(db, manage_token, True)
+            return RedirectResponse(f"/subscribe/{manage_token}", status_code=303)
+        request_id = create_join_request(
+            db, session["open_id"], session["feishu_name"], purchaser
+        )
+    finally:
+        db.close()
+    return HTMLResponse(
+        f"<h2>申请已提交</h2><p>申请编号：{request_id}。姓名不一致，管理员审核后生效。</p>"
+    )
+
+
 @app.post("/admin/buyers")
 def add_buyer(body: BuyerInput, x_admin_token: str | None = Header(None)):
     require_admin(x_admin_token)
@@ -72,6 +173,29 @@ def add_buyer(body: BuyerInput, x_admin_token: str | None = Header(None)):
     finally:
         db.close()
     return {"invite_url": f"{settings.app_base_url.rstrip('/')}/subscribe/{token}"}
+
+
+@app.get("/admin/join-requests")
+def list_join_requests(x_admin_token: str | None = Header(None)):
+    require_admin(x_admin_token)
+    db = connect(settings.database_path)
+    try:
+        return [dict(row) for row in pending_join_requests(db)]
+    finally:
+        db.close()
+
+
+@app.post("/admin/join-requests/{request_id}/approve")
+def approve_join(request_id: int, x_admin_token: str | None = Header(None)):
+    require_admin(x_admin_token)
+    db = connect(settings.database_path)
+    try:
+        token = approve_join_request(db, request_id)
+    finally:
+        db.close()
+    if not token:
+        raise HTTPException(404, "待审核申请不存在")
+    return {"ok": True, "manage_url": f"{settings.app_base_url}/subscribe/{token}"}
 
 
 @app.post("/admin/run")
