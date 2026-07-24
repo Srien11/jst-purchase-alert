@@ -183,6 +183,22 @@ def pending_join_requests(db: sqlite3.Connection):
     ).fetchall()
 
 
+def join_request_by_id(db: sqlite3.Connection, request_id: int):
+    return db.execute(
+        "SELECT * FROM join_requests WHERE id=?", (request_id,)
+    ).fetchone()
+
+
+def reject_join_request(db: sqlite3.Connection, request_id: int) -> bool:
+    cursor = db.execute(
+        """UPDATE join_requests SET status='rejected'
+           WHERE id=? AND status='pending'""",
+        (request_id,),
+    )
+    db.commit()
+    return cursor.rowcount == 1
+
+
 def approve_join_request(db: sqlite3.Connection, request_id: int) -> str | None:
     row = db.execute(
         "SELECT * FROM join_requests WHERE id=? AND status='pending'", (request_id,)
