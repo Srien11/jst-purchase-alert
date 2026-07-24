@@ -68,3 +68,18 @@ curl -X POST https://你的域名/admin/test-feishu \
 ```
 
 该接口不会触发采购预警或写入提醒记录。未携带正确管理员令牌时返回 `401`。
+
+## 采购员自助开通
+
+统一入口：`https://purchase-alert.kktree.cn/join`
+
+用户经飞书 OAuth 登录后选择对应的聚水潭采购员。飞书姓名与采购员姓名完全
+一致时立即开通；不一致时进入待审核列表，避免用户冒领其他采购员的数据。
+
+飞书开放平台需要开启网页应用能力，并将以下地址加入安全设置中的重定向 URL：
+
+`https://purchase-alert.kktree.cn/join/callback`
+
+管理员可通过 `GET /admin/join-requests` 查询待审核申请，通过
+`POST /admin/join-requests/{id}/approve` 审核，两个接口均需
+`X-Admin-Token` 请求头。
