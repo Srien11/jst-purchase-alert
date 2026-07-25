@@ -21,14 +21,19 @@ def classify(order: PurchaseOrder, today: date, travel_buffer_days: int) -> Aler
 
 
 def build_alerts(
-    orders: list[PurchaseOrder], today: date, purchaser: str, travel_buffer_days: int
+    orders: list[PurchaseOrder],
+    today: date,
+    purchaser: str,
+    travel_buffer_days: int,
+    overdue_days: int = 0,
 ) -> list[AlertRow]:
+    minimum_days = -max(0, overdue_days)
     rows = [
         classify(o, today, travel_buffer_days)
         for o in orders
         if (
             o.purchaser == purchaser
-            and MIN_EFFECTIVE_DAYS
+            and minimum_days
             <= (o.delivery_date - today).days
             <= MAX_EFFECTIVE_DAYS
         )

@@ -96,15 +96,22 @@ def render_report(purchaser: str, rows, manage_url: str) -> str:
     return "\n".join(lines)
 
 
-def build_report_card(purchaser: str, rows, manage_url: str) -> dict:
+def build_report_card(
+    purchaser: str, rows, manage_url: str, overdue_days: int = 0
+) -> dict:
     stat = summary(rows)
+    overdue_count = sum(row.effective_days_left < 0 for row in rows)
+    urgent_count = sum(
+        row.level == "红" and row.effective_days_left >= 0 for row in rows
+    )
     order_count = len({r.order.order_no for r in rows})
     table_rows = []
     for row in rows:
         order = row.order
         table_rows.append({
             "level": (
-                "🔴 紧急" if row.level == "红"
+                "⛔ 已逾期" if row.effective_days_left < 0
+                else "🔴 紧急" if row.level == "红"
                 else "🟡 关注" if row.level == "黄"
                 else "🟢 正常"
             ),
@@ -112,7 +119,11 @@ def build_report_card(purchaser: str, rows, manage_url: str) -> dict:
             "supplier": order.supplier,
             "item": order.item_name or order.sku,
             "delivery_date": str(order.delivery_date),
-            "days_left": f"{row.effective_days_left} 天",
+            "days_left": (
+                f"逾期 {abs(row.effective_days_left)} 天"
+                if row.effective_days_left < 0
+                else f"剩余 {row.effective_days_left} 天"
+            ),
             "pending_qty": str(order.pending_qty),
             "in_transit_percentage": in_transit_percentage(
                 order.pending_qty, order.ordered_qty
@@ -136,7 +147,8 @@ def build_report_card(purchaser: str, rows, manage_url: str) -> dict:
                     f"在途明细：**{len(rows)}** 条\n"
                     f"订购 / 已入库 / 在途："
                     f"**{stat['ordered_qty']} / {stat['received_qty']} / {stat['pending_qty']}**\n"
-                    f"🔴 0–6天 {stat['red']} 条　🟡 7–10天 {stat['yellow']} 条　"
+                    f"⛔ 逾期未完成 {overdue_count} 条　"
+                    f"🔴 0–6天 {urgent_count} 条　🟡 7–10天 {stat['yellow']} 条　"
                     f"🟢 11–15天 {stat['green']} 条\n"
                     "**剩余天数按交期直接计算，不再扣减运输时间**"
                 ),
@@ -174,7 +186,7 @@ def build_report_card(purchaser: str, rows, manage_url: str) -> dict:
                         "type": "default",
                         "url": (
                             f"{manage_url}/report?purchaser="
-                            f"{quote(purchaser, safe='')}"
+                            f"{quote(purchaser, safe='')}&overdue_days={overdue_days}"
                         ),
                     },
                 ],
@@ -183,7 +195,9 @@ def build_report_card(purchaser: str, rows, manage_url: str) -> dict:
     }
 
 
-def build_order_summary_card(purchaser: str, rows, manage_url: str) -> dict:
+def build_order_summary_card(
+    purchaser: str, rows, manage_url: str, overdue_days: int = 0
+) -> dict:
     grouped = {}
     for row in rows:
         grouped.setdefault(row.order.order_no, []).append(row)
@@ -202,7 +216,8 @@ def build_order_summary_card(purchaser: str, rows, manage_url: str) -> dict:
         pending_qty = sum(order.pending_qty for order in orders)
         table_rows.append({
             "level": (
-                "🔴 紧急" if most_urgent.level == "红"
+                "⛔ 已逾期" if most_urgent.effective_days_left < 0
+                else "🔴 紧急" if most_urgent.level == "红"
                 else "🟡 关注" if most_urgent.level == "黄"
                 else "🟢 正常"
             ),
@@ -211,7 +226,11 @@ def build_order_summary_card(purchaser: str, rows, manage_url: str) -> dict:
             "item_names": "、".join(item_names),
             "sku_count": str(len({order.sku for order in orders})),
             "delivery_date": str(min(order.delivery_date for order in orders)),
-            "days_left": f"{most_urgent.effective_days_left} 天",
+            "days_left": (
+                f"逾期 {abs(most_urgent.effective_days_left)} 天"
+                if most_urgent.effective_days_left < 0
+                else f"剩余 {most_urgent.effective_days_left} 天"
+            ),
             "ordered_qty": str(ordered_qty),
             "received_qty": str(received_qty),
             "pending_qty": str(pending_qty),
@@ -219,7 +238,16 @@ def build_order_summary_card(purchaser: str, rows, manage_url: str) -> dict:
                 pending_qty, ordered_qty
             ),
         })
-    table_rows.sort(key=lambda row: (int(row["days_left"].split()[0]), row["order_no"]))
+    table_rows.sort(
+        key=lambda row: (
+            0 if row["level"] == "⛔ 已逾期" else 1,
+            -int(row["days_left"].split()[1])
+            if row["level"] == "⛔ 已逾期"
+            else int(row["days_left"].split()[1]),
+            row["order_no"],
+        )
+    )
+    overdue_orders = sum(row["level"] == "⛔ 已逾期" for row in table_rows)
     return {
         "config": {"wide_screen_mode": True},
         "header": {
@@ -235,8 +263,9 @@ def build_order_summary_card(purchaser: str, rows, manage_url: str) -> dict:
                 "content": (
                     f"**实时在途数据**\n"
                     f"采购单：**{len(grouped)}** 单　SKU 明细：**{len(rows)}** 条\n"
+                    f"逾期未完成：**{overdue_orders}** 单\n"
                     "表格已按采购单聚合，每张采购单仅显示一行。\n"
-                    "🔴 0–6天　🟡 7–10天　🟢 11–15天\n"
+                    "⛔ 已逾期　🔴 0–6天　🟡 7–10天　🟢 11–15天\n"
                     "**剩余天数按交期直接计算，不再扣减运输时间**"
                 ),
             },
@@ -276,7 +305,7 @@ def build_order_summary_card(purchaser: str, rows, manage_url: str) -> dict:
                         "type": "default",
                         "url": (
                             f"{manage_url}/report?purchaser="
-                            f"{quote(purchaser, safe='')}"
+                            f"{quote(purchaser, safe='')}&overdue_days={overdue_days}"
                         ),
                     },
                 ],
@@ -304,15 +333,26 @@ def schedule_slot(buyer, now: datetime) -> str | None:
 
 def _active_rows(db, buyer, orders):
     closed = closed_order_numbers(db, buyer["purchaser"])
-    return current_report_rows(orders, buyer["purchaser"], closed)
+    return current_report_rows(
+        orders, buyer["purchaser"], closed, buyer["overdue_days"]
+    )
 
 
-def current_report_rows(orders, purchaser: str, closed: set[str] | None = None):
+def current_report_rows(
+    orders,
+    purchaser: str,
+    closed: set[str] | None = None,
+    overdue_days: int = 0,
+):
     closed = closed or set()
     return [
         row
         for row in build_alerts(
-            orders, business_today(), purchaser, settings.travel_buffer_days
+            orders,
+            business_today(),
+            purchaser,
+            settings.travel_buffer_days,
+            overdue_days,
         )
         if row.order.order_no not in closed and not row.order.is_received
     ]
@@ -333,7 +373,9 @@ async def _send_rows(buyer, rows) -> int:
         chunk = rows[start:start + CARD_TABLE_ROW_LIMIT]
         await send_card(
             buyer["feishu_open_id"],
-            build_report_card(buyer["purchaser"], chunk, manage_url),
+            build_report_card(
+                buyer["purchaser"], chunk, manage_url, buyer["overdue_days"]
+            ),
         )
         messages += 1
     return messages
@@ -342,12 +384,20 @@ async def _send_rows(buyer, rows) -> int:
 async def _send_order_summaries(buyer, rows) -> int:
     manage_url = f"{settings.app_base_url.rstrip('/')}/subscribe/{buyer['token']}"
     return await _send_order_summaries_to(
-        buyer["feishu_open_id"], buyer["purchaser"], rows, manage_url
+        buyer["feishu_open_id"],
+        buyer["purchaser"],
+        rows,
+        manage_url,
+        buyer["overdue_days"],
     )
 
 
 async def _send_order_summaries_to(
-    feishu_open_id: str, purchaser: str, rows, manage_url: str
+    feishu_open_id: str,
+    purchaser: str,
+    rows,
+    manage_url: str,
+    overdue_days: int = 0,
 ) -> int:
     order_numbers = list(dict.fromkeys(row.order.order_no for row in rows))
     messages = 0
@@ -356,7 +406,9 @@ async def _send_order_summaries_to(
         chunk = [row for row in rows if row.order.order_no in selected]
         await send_card(
             feishu_open_id,
-            build_order_summary_card(purchaser, chunk, manage_url),
+            build_order_summary_card(
+                purchaser, chunk, manage_url, overdue_days
+            ),
         )
         messages += 1
     return messages
@@ -428,7 +480,7 @@ async def run_scheduled_checks(now: datetime | None = None) -> dict:
         try:
             db = connect(settings.database_path)
             try:
-                rows = _current_in_transit(_active_rows(db, buyer, orders))
+                rows = _active_rows(db, buyer, orders)
             finally:
                 db.close()
             if rows:
@@ -480,7 +532,7 @@ async def send_manual_report(token: str) -> dict:
         if not row or not is_authorized_purchaser(row["purchaser"]):
             raise KeyError(token)
         buyer = dict(row)
-        rows = _current_in_transit(_active_rows(db, buyer, orders))
+        rows = _active_rows(db, buyer, orders)
     finally:
         db.close()
     if not rows:
@@ -499,7 +551,10 @@ async def send_manual_report(token: str) -> dict:
 
 
 async def send_manager_report(
-    token: str, purchaser: str = "*", orders=None
+    token: str,
+    purchaser: str = "*",
+    orders=None,
+    overdue_days: int | None = None,
 ) -> dict:
     if orders is None:
         orders = await get_cached_orders()
@@ -519,17 +574,26 @@ async def send_manager_report(
     if purchaser != "*" and purchaser not in available:
         raise KeyError(purchaser)
     selected = available if purchaser == "*" else [purchaser]
+    selected_overdue_days = (
+        manager["overdue_days"] if overdue_days is None else max(0, overdue_days)
+    )
     messages = rows_count = order_count = buyers_count = 0
     manage_url = f"{settings.app_base_url.rstrip('/')}/subscribe/{token}"
     for name in selected:
-        rows = _current_in_transit(current_report_rows(orders, name))
+        rows = current_report_rows(
+            orders, name, overdue_days=selected_overdue_days
+        )
         if not rows:
             continue
         buyers_count += 1
         rows_count += len(rows)
         order_count += len({row.order.order_no for row in rows})
         messages += await _send_order_summaries_to(
-            manager["feishu_open_id"], name, rows, manage_url
+            manager["feishu_open_id"],
+            name,
+            rows,
+            manage_url,
+            selected_overdue_days,
         )
     if not messages:
         await send_message(

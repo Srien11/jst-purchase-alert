@@ -22,6 +22,7 @@ from app.storage import (
     set_buyer_enabled,
     system_event,
     update_buyer_schedule,
+    update_buyer_overdue_days,
     upsert_buyer,
 )
 
@@ -155,6 +156,19 @@ class StorageTests(unittest.TestCase):
                     buyer_by_token(db, token)["last_schedule_slot"],
                     "2026-07-24T14:30",
                 )
+            finally:
+                db.close()
+
+    def test_overdue_range_defaults_to_off_and_persists_per_buyer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = connect(str(Path(tmp) / "overdue.db"))
+            try:
+                first = upsert_buyer(db, "采购员甲", "ou_a")
+                second = upsert_buyer(db, "采购员乙", "ou_b")
+                self.assertEqual(buyer_by_token(db, first)["overdue_days"], 0)
+                update_buyer_overdue_days(db, first, 14)
+                self.assertEqual(buyer_by_token(db, first)["overdue_days"], 14)
+                self.assertEqual(buyer_by_token(db, second)["overdue_days"], 0)
             finally:
                 db.close()
 

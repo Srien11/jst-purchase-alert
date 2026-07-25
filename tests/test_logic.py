@@ -61,6 +61,26 @@ class LogicTests(unittest.TestCase):
             ["CURRENT"],
         )
 
+    def test_overdue_range_is_optional_and_inclusive(self):
+        orders = [
+            self.order("OVERDUE-7", -7),
+            self.order("OVERDUE-8", -8),
+            self.order("CURRENT", 0),
+        ]
+        default_rows = build_alerts(
+            orders, date(2026, 7, 24), "小王", 0
+        )
+        selected_rows = build_alerts(
+            orders, date(2026, 7, 24), "小王", 0, overdue_days=7
+        )
+        self.assertEqual(
+            {row.order.order_no for row in default_rows}, {"CURRENT"}
+        )
+        self.assertEqual(
+            {row.order.order_no for row in selected_rows},
+            {"OVERDUE-7", "CURRENT"},
+        )
+
     def test_level_boundaries_are_non_overlapping(self):
         rows = build_alerts(
             [
@@ -165,6 +185,27 @@ class LogicTests(unittest.TestCase):
             ["管理通知", "完整网页版"],
         )
         self.assertIn("/report?purchaser=", actions[1]["url"])
+
+    def test_card_labels_overdue_without_negative_remaining_days(self):
+        rows = build_alerts(
+            [self.order("LATE", -14), self.order("CURRENT", 6)],
+            date(2026, 7, 24), "小王", 0, overdue_days=14,
+        )
+        card = build_order_summary_card(
+            "小王", rows, "https://example.test", overdue_days=14
+        )
+        table = next(
+            element for element in card["elements"]
+            if element["tag"] == "table"
+        )
+        self.assertEqual(table["rows"][0]["order_no"], "LATE")
+        self.assertEqual(table["rows"][0]["level"], "⛔ 已逾期")
+        self.assertEqual(table["rows"][0]["days_left"], "逾期 14 天")
+        actions = next(
+            element for element in card["elements"]
+            if element["tag"] == "action"
+        )["actions"]
+        self.assertIn("overdue_days=14", actions[1]["url"])
 
 
 if __name__ == "__main__":

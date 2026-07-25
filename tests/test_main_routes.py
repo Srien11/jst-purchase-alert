@@ -70,10 +70,7 @@ class MainRouteTests(unittest.TestCase):
             source.index("async def run_scheduled_checks"):
             source.index("async def send_manual_report")
         ]
-        self.assertIn(
-            "_current_in_transit(_active_rows(db, buyer, orders))",
-            scheduled,
-        )
+        self.assertIn("_active_rows(db, buyer, orders)", scheduled)
         self.assertIn("_send_order_summaries(buyer, rows)", scheduled)
         self.assertNotIn("_run_for_buyers(personal_buyers", scheduled)
         self.assertIn("completed_buyers", scheduled)
@@ -93,6 +90,9 @@ class MainRouteTests(unittest.TestCase):
         self.assertIn('content:attr(data-label)', source)
         self.assertIn("填入北京时间（下一分钟）", source)
         self.assertIn('timeZone:"Asia/Shanghai"', source)
+        self.assertIn('name="overdue_days"', source)
+        self.assertIn("逾期未完成范围", source)
+        self.assertIn("逾期未完成数据", source)
 
     def test_legacy_join_review_routes_are_removed(self):
         source = (Path(__file__).parents[1] / "app" / "main.py").read_text(

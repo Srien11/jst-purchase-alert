@@ -71,6 +71,7 @@ def connect(path: str) -> sqlite3.Connection:
         "last_schedule_slot": "TEXT NOT NULL DEFAULT ''",
         "is_manager": "INTEGER NOT NULL DEFAULT 0",
         "schedule_purchaser": "TEXT NOT NULL DEFAULT '*'",
+        "overdue_days": "INTEGER NOT NULL DEFAULT 0",
     }
     for name, definition in migrations.items():
         if name not in columns:
@@ -211,6 +212,16 @@ def update_buyer_schedule(
            last_schedule_slot=''
            WHERE token=?""",
         (frequency, hour, minute, weekday, purchaser, token),
+    )
+    db.commit()
+
+
+def update_buyer_overdue_days(
+    db: sqlite3.Connection, token: str, overdue_days: int
+):
+    db.execute(
+        "UPDATE buyers SET overdue_days=? WHERE token=?",
+        (overdue_days, token),
     )
     db.commit()
 
