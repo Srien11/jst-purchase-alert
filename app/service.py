@@ -1,5 +1,8 @@
 import asyncio
+import logging
 from datetime import date, datetime
+import httpx
+from .authorization import is_authorized_purchaser
 from .config import settings
 from .feishu import send_card, send_message
 from .jushuitan import fetch_orders
@@ -20,6 +23,7 @@ from .storage import (
 
 CARD_TABLE_ROW_LIMIT = 50
 _cache_refresh_lock = asyncio.Lock()
+logger = logging.getLogger(__name__)
 
 
 def in_transit_percentage(pending_qty, ordered_qty) -> str:
@@ -359,7 +363,11 @@ async def _run_for_buyers(buyers, orders) -> dict:
 async def run_check() -> dict:
     db = connect(settings.database_path)
     try:
-        buyers = [dict(row) for row in active_buyers(db)]
+        buyers = [
+            dict(row)
+            for row in active_buyers(db)
+            if is_authorized_purchaser(row["purchaser"])
+        ]
     finally:
         db.close()
     orders = await get_cached_orders()
@@ -373,6 +381,8 @@ async def run_scheduled_checks(now: datetime | None = None) -> dict:
         due_buyers = []
         slots = {}
         for row in active_buyers(db):
+            if not is_authorized_purchaser(row["purchaser"]):
+                continue
             buyer = dict(row)
             slot = schedule_slot(buyer, current)
             if slot:
@@ -381,25 +391,54 @@ async def run_scheduled_checks(now: datetime | None = None) -> dict:
     finally:
         db.close()
     if not due_buyers:
-        return {"buyers": 0, "messages": 0, "orders": 0}
+        return {"buyers": 0, "messages": 0, "orders": 0, "failures": []}
     orders = await get_cached_orders()
     personal_buyers = [buyer for buyer in due_buyers if not buyer["is_manager"]]
     manager_buyers = [buyer for buyer in due_buyers if buyer["is_manager"]]
-    result = (
-        await _run_for_buyers(personal_buyers, orders)
-        if personal_buyers
-        else {"buyers": 0, "messages": 0, "orders": 0}
-    )
+    result = {"buyers": 0, "messages": 0, "orders": 0, "failures": []}
+    completed_buyers = []
+    for buyer in personal_buyers:
+        try:
+            db = connect(settings.database_path)
+            try:
+                rows = _current_in_transit(_active_rows(db, buyer, orders))
+            finally:
+                db.close()
+            if rows:
+                messages = await _send_order_summaries(buyer, rows)
+            else:
+                await send_message(
+                    buyer["feishu_open_id"],
+                    "采购在途数据｜定时推送",
+                    "当前没有剩余 0–15 天且尚未全部入库的在途采购明细。",
+                )
+                messages = 1
+            result["buyers"] += 1
+            result["messages"] += messages
+            result["orders"] += len({row.order.order_no for row in rows})
+            completed_buyers.append(buyer)
+        except (httpx.HTTPError, RuntimeError) as exc:
+            logger.exception("Scheduled report failed for %s", buyer["purchaser"])
+            result["failures"].append(
+                {"purchaser": buyer["purchaser"], "error": str(exc)}
+            )
     for manager in manager_buyers:
-        manager_result = await send_manager_report(
-            manager["token"], manager["schedule_purchaser"], orders=orders
-        )
-        result["buyers"] += manager_result["buyers"]
-        result["messages"] += manager_result["messages"]
-        result["orders"] += manager_result["orders"]
+        try:
+            manager_result = await send_manager_report(
+                manager["token"], manager["schedule_purchaser"], orders=orders
+            )
+            result["buyers"] += manager_result["buyers"]
+            result["messages"] += manager_result["messages"]
+            result["orders"] += manager_result["orders"]
+            completed_buyers.append(manager)
+        except (httpx.HTTPError, RuntimeError) as exc:
+            logger.exception("Scheduled manager report failed for %s", manager["purchaser"])
+            result["failures"].append(
+                {"purchaser": manager["purchaser"], "error": str(exc)}
+            )
     db = connect(settings.database_path)
     try:
-        for buyer in due_buyers:
+        for buyer in completed_buyers:
             mark_schedule_slot(db, buyer["token"], slots[buyer["token"]])
     finally:
         db.close()
@@ -411,7 +450,7 @@ async def send_manual_report(token: str) -> dict:
     db = connect(settings.database_path)
     try:
         row = buyer_by_token(db, token)
-        if not row:
+        if not row or not is_authorized_purchaser(row["purchaser"]):
             raise KeyError(token)
         buyer = dict(row)
         rows = _current_in_transit(_active_rows(db, buyer, orders))
@@ -440,7 +479,11 @@ async def send_manager_report(
     db = connect(settings.database_path)
     try:
         row = buyer_by_token(db, token)
-        if not row or not row["is_manager"]:
+        if (
+            not row
+            or not is_authorized_purchaser(row["purchaser"])
+            or not row["is_manager"]
+        ):
             raise PermissionError(token)
         manager = dict(row)
     finally:
@@ -451,7 +494,6 @@ async def send_manager_report(
     selected = available if purchaser == "*" else [purchaser]
     messages = rows_count = order_count = buyers_count = 0
     manage_url = f"{settings.app_base_url.rstrip('/')}/subscribe/{token}"
-    send_jobs = []
     for name in selected:
         rows = _current_in_transit([
             row
@@ -465,13 +507,9 @@ async def send_manager_report(
         buyers_count += 1
         rows_count += len(rows)
         order_count += len({row.order.order_no for row in rows})
-        send_jobs.append(
-            _send_order_summaries_to(
-                manager["feishu_open_id"], name, rows, manage_url
-            )
+        messages += await _send_order_summaries_to(
+            manager["feishu_open_id"], name, rows, manage_url
         )
-    if send_jobs:
-        messages = sum(await asyncio.gather(*send_jobs))
     if not messages:
         await send_message(
             manager["feishu_open_id"],

@@ -8,9 +8,14 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import BackgroundTasks, Cookie, FastAPI, Form, Header, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
+from .authorization import (
+    AUTHORIZED_PURCHASERS,
+    authorized_login_identity,
+    is_authorized_purchaser,
+    is_procurement_manager,
+)
 from .config import settings
 from .feishu import oauth_user, send_message
-from .matching import normalize_person_name, unique_purchaser_match
 from .review import review_signature, valid_review_signature
 from .service import (
     run_check,
@@ -20,9 +25,8 @@ from .service import (
     send_manual_report,
 )
 from .storage import (
-    active_buyers,
-    buyer_by_open_id,
-    buyer_by_token,
+    active_buyers as stored_active_buyers,
+    buyer_by_token as stored_buyer_by_token,
     cached_purchasers,
     claim_system_event,
     close_alert,
@@ -43,27 +47,23 @@ from .storage import (
     upsert_buyer,
 )
 
-PROCUREMENT_MANAGERS = {"吴子杰&茴香", "刘智博&木耳"}
-AUTHORIZED_PURCHASERS = {
-    "夏雨磊&大虾 桐乡",
-    "廖钰&桑葚 桐乡",
-    "张利兰&饺子 桐乡",
-    "张小薇&花卷 桐乡",
-    "朱虹&菱角 桐乡",
-    "钟晓盈&椰子 桐乡",
-}
-AUTHORIZED_USERS = AUTHORIZED_PURCHASERS | PROCUREMENT_MANAGERS
-
-
-def is_procurement_manager(purchaser: str) -> bool:
-    normalized = normalize_person_name(purchaser)
-    return any(
-        normalized == normalize_person_name(manager)
-        for manager in PROCUREMENT_MANAGERS
-    )
-
 scheduler = AsyncIOScheduler(timezone=settings.timezone)
 ONE_TIME_BOUND_TEST = "bound-buyers-test-v1"
+
+
+def buyer_by_token(db, token: str):
+    buyer = stored_buyer_by_token(db, token)
+    if buyer and is_authorized_purchaser(buyer["purchaser"]):
+        return buyer
+    return None
+
+
+def active_buyers(db):
+    return [
+        buyer
+        for buyer in stored_active_buyers(db)
+        if is_authorized_purchaser(buyer["purchaser"])
+    ]
 
 
 @asynccontextmanager
@@ -175,21 +175,9 @@ async def join_callback(code: str, state: str):
         name = str(user.get("name") or "").strip()
         if not open_id or not name:
             raise HTTPException(400, "飞书未返回有效用户身份")
-        authorized = buyer_by_open_id(db, open_id)
     finally:
         db.close()
-    if authorized:
-        token = authorized["token"]
-        db = connect(settings.database_path)
-        try:
-            set_buyer_enabled(db, token, True)
-        finally:
-            db.close()
-        return remember_buyer(
-            RedirectResponse(public_url(f"/subscribe/{token}"), status_code=303),
-            token,
-        )
-    purchaser = unique_purchaser_match(name, AUTHORIZED_USERS)
+    purchaser = authorized_login_identity(name)
     if purchaser:
         db = connect(settings.database_path)
         try:
@@ -212,9 +200,11 @@ async def join_callback(code: str, state: str):
 @app.post("/admin/buyers")
 def add_buyer(body: BuyerInput, x_admin_token: str | None = Header(None)):
     require_admin(x_admin_token)
+    purchaser = authorized_login_identity(body.purchaser.strip())
+    if not purchaser:
+        raise HTTPException(403, "该采购身份不在固定授权名单中")
     db = connect(settings.database_path)
     try:
-        purchaser = body.purchaser.strip()
         token = upsert_buyer(
             db,
             purchaser,
