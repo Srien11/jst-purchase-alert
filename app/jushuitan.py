@@ -75,11 +75,16 @@ async def _post(client: httpx.AsyncClient, url: str, body: dict) -> dict:
     raise RuntimeError(f"聚水潭接口失败: {payload.get('code')} {payload.get('msg')}")
 
 
-async def _purchase_rows(client: httpx.AsyncClient) -> list[dict]:
+async def _purchase_rows(
+    client: httpx.AsyncClient, lookback_days: int | None = None
+) -> list[dict]:
     rows_by_id: dict[str, dict] = {}
     modified_end = datetime.now()
     overall_begin = modified_end - timedelta(
-        days=settings.jst_purchase_lookback_days
+        days=(
+            settings.jst_purchase_lookback_days
+            if lookback_days is None else lookback_days
+        )
     )
     window_begin = overall_begin
     while window_begin < modified_end:
@@ -168,7 +173,7 @@ def _flatten(purchases: list[dict], received) -> list[PurchaseOrder]:
     return result
 
 
-async def fetch_orders() -> list[PurchaseOrder]:
+async def fetch_orders(lookback_days: int | None = None) -> list[PurchaseOrder]:
     if settings.demo_mode:
         today = date.today()
         return [
@@ -204,7 +209,7 @@ async def fetch_orders() -> list[PurchaseOrder]:
             ),
         ]
     async with httpx.AsyncClient(timeout=45) as client:
-        purchases = await _purchase_rows(client)
+        purchases = await _purchase_rows(client, lookback_days)
         po_ids = [int(row["po_id"]) for row in purchases]
         received = await _received_quantities(client, po_ids) if po_ids else {}
     return _flatten(purchases, received)

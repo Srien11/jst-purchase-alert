@@ -1,7 +1,9 @@
 import secrets
 import sqlite3
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
+from .models import PurchaseOrder
 
 
 def connect(path: str) -> sqlite3.Connection:
@@ -55,6 +57,22 @@ def connect(path: str) -> sqlite3.Connection:
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS order_cache (
+          order_no TEXT NOT NULL,
+          purchaser TEXT NOT NULL,
+          supplier TEXT NOT NULL,
+          delivery_date TEXT NOT NULL,
+          ordered_qty TEXT NOT NULL,
+          received_qty TEXT NOT NULL,
+          sku TEXT NOT NULL,
+          item_name TEXT NOT NULL,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (order_no, sku, item_name, delivery_date)
+        );
+        CREATE TABLE IF NOT EXISTS cache_state (
+          cache_key TEXT PRIMARY KEY,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
         """
     )
     columns = {row["name"] for row in db.execute("PRAGMA table_info(buyers)")}
@@ -72,6 +90,82 @@ def connect(path: str) -> sqlite3.Connection:
             db.execute(f"ALTER TABLE buyers ADD COLUMN {name} {definition}")
     db.commit()
     return db
+
+
+def _insert_cached_orders(db: sqlite3.Connection, orders: list[PurchaseOrder]):
+    db.executemany(
+        """INSERT OR REPLACE INTO order_cache(
+           order_no,purchaser,supplier,delivery_date,ordered_qty,
+           received_qty,sku,item_name,updated_at)
+           VALUES(?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)""",
+        [
+            (
+                order.order_no,
+                order.purchaser,
+                order.supplier,
+                order.delivery_date.isoformat(),
+                str(order.ordered_qty),
+                str(order.received_qty),
+                order.sku,
+                order.item_name,
+            )
+            for order in orders
+        ],
+    )
+
+
+def replace_order_cache(db: sqlite3.Connection, orders: list[PurchaseOrder]):
+    with db:
+        db.execute("DELETE FROM order_cache")
+        _insert_cached_orders(db, orders)
+        db.execute(
+            """INSERT OR REPLACE INTO cache_state(cache_key,updated_at)
+               VALUES('full',CURRENT_TIMESTAMP)"""
+        )
+
+
+def merge_order_cache(db: sqlite3.Connection, orders: list[PurchaseOrder]):
+    order_numbers = sorted({order.order_no for order in orders})
+    with db:
+        if order_numbers:
+            placeholders = ",".join("?" for _ in order_numbers)
+            db.execute(
+                f"DELETE FROM order_cache WHERE order_no IN ({placeholders})",
+                order_numbers,
+            )
+        _insert_cached_orders(db, orders)
+        db.execute(
+            """INSERT OR REPLACE INTO cache_state(cache_key,updated_at)
+               VALUES('incremental',CURRENT_TIMESTAMP)"""
+        )
+
+
+def cached_orders(db: sqlite3.Connection) -> list[PurchaseOrder]:
+    return [
+        PurchaseOrder(
+            order_no=row["order_no"],
+            purchaser=row["purchaser"],
+            supplier=row["supplier"],
+            delivery_date=date.fromisoformat(row["delivery_date"]),
+            ordered_qty=Decimal(row["ordered_qty"]),
+            received_qty=Decimal(row["received_qty"]),
+            sku=row["sku"],
+            item_name=row["item_name"],
+        )
+        for row in db.execute(
+            "SELECT * FROM order_cache ORDER BY order_no,sku,item_name"
+        )
+    ]
+
+
+def cached_purchasers(db: sqlite3.Connection) -> list[str]:
+    return [
+        row["purchaser"]
+        for row in db.execute(
+            """SELECT DISTINCT purchaser FROM order_cache
+               WHERE purchaser<>'' ORDER BY purchaser"""
+        )
+    ]
 
 
 def upsert_buyer(

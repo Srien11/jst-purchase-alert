@@ -156,6 +156,7 @@ class LogicTests(unittest.TestCase):
         self.assertEqual(po1["ordered_qty"], "200")
         self.assertEqual(po1["received_qty"], "20")
         self.assertEqual(po1["pending_qty"], "180")
+        self.assertEqual(po1["in_transit_percentage"], "90.0%")
 
 
 if __name__ == "__main__":
