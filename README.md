@@ -87,7 +87,7 @@ curl -X POST https://你的域名/admin/test-feishu \
 
 ## 采购员自助开通
 
-统一入口：`https://jushuitan.skills.kktree.cn/purchase-alert/join`
+统一入口：`https://purchase-alert.kktree.cn/purchase-alert/join`
 
 系统内置 6 位采购和 2 位负责人的固定授权名单。用户经飞书 OAuth 登录后按飞书
 姓名或昵称自动绑定并直接进入本人页面，不需要选择采购员或等待审批；未授权账号
@@ -96,6 +96,6 @@ curl -X POST https://你的域名/admin/test-feishu \
 
 飞书开放平台需要开启网页应用能力，并将以下地址加入安全设置中的重定向 URL：
 
-`https://jushuitan.skills.kktree.cn/purchase-alert/join/callback`
+`https://purchase-alert.kktree.cn/purchase-alert/join/callback`
 
 采购身份授权接口需要 `X-Admin-Token` 请求头。

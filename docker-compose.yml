@@ -10,7 +10,7 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=traefik-network"
-      - "traefik.http.routers.purchase-alert.rule=Host(`jushuitan.skills.kktree.cn`) && PathPrefix(`/purchase-alert`)"
+      - "traefik.http.routers.purchase-alert.rule=Host(`purchase-alert.kktree.cn`) && PathPrefix(`/purchase-alert`)"
       - "traefik.http.routers.purchase-alert.entrypoints=websecure"
       - "traefik.http.routers.purchase-alert.middlewares=purchase-alert-strip"
       - "traefik.http.routers.purchase-alert.tls=true"
