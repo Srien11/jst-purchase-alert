@@ -157,6 +157,14 @@ class LogicTests(unittest.TestCase):
         self.assertEqual(po1["received_qty"], "20")
         self.assertEqual(po1["pending_qty"], "180")
         self.assertEqual(po1["in_transit_percentage"], "90.0%")
+        actions = next(
+            element for element in card["elements"] if element["tag"] == "action"
+        )["actions"]
+        self.assertEqual(
+            [action["text"]["content"] for action in actions],
+            ["管理通知", "完整网页版"],
+        )
+        self.assertIn("/report?purchaser=", actions[1]["url"])
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ import time
 import httpx
 from .config import settings
 from .models import PurchaseOrder
+from .timeutils import business_naive_now
 
 
 ACTIVE_PURCHASE_STATUSES = ["Confirmed", "WaitDeliver", "WaitReceive"]
@@ -79,7 +80,7 @@ async def _purchase_rows(
     client: httpx.AsyncClient, lookback_days: int | None = None
 ) -> list[dict]:
     rows_by_id: dict[str, dict] = {}
-    modified_end = datetime.now()
+    modified_end = business_naive_now()
     overall_begin = modified_end - timedelta(
         days=(
             settings.jst_purchase_lookback_days

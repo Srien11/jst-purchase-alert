@@ -1,7 +1,8 @@
 import asyncio
 import logging
-from datetime import date, datetime
+from datetime import datetime
 import httpx
+from urllib.parse import quote
 from .authorization import is_authorized_purchaser
 from .config import settings
 from .feishu import send_card, send_message
@@ -19,6 +20,7 @@ from .storage import (
     replace_order_cache,
     was_sent,
 )
+from .timeutils import business_now, business_today
 
 
 CARD_TABLE_ROW_LIMIT = 50
@@ -33,9 +35,7 @@ def in_transit_percentage(pending_qty, ordered_qty) -> str:
 
 
 async def refresh_order_cache(full: bool = False) -> dict:
-    if _cache_refresh_lock.locked():
-        async with _cache_refresh_lock:
-            return {"waited": True}
+    queued = _cache_refresh_lock.locked()
     async with _cache_refresh_lock:
         lookback_days = (
             settings.jst_purchase_lookback_days
@@ -50,7 +50,7 @@ async def refresh_order_cache(full: bool = False) -> dict:
                 merge_order_cache(db, orders)
         finally:
             db.close()
-        return {"orders": len(orders), "full": full}
+        return {"orders": len(orders), "full": full, "queued": queued}
 
 
 async def get_cached_orders() -> list:
@@ -161,12 +161,23 @@ def build_report_card(purchaser: str, rows, manage_url: str) -> dict:
             },
             {
                 "tag": "action",
-                "actions": [{
-                    "tag": "button",
-                    "text": {"tag": "plain_text", "content": "管理预警"},
-                    "type": "primary",
-                    "url": manage_url,
-                }],
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "管理通知"},
+                        "type": "primary",
+                        "url": manage_url,
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "完整网页版"},
+                        "type": "default",
+                        "url": (
+                            f"{manage_url}/report?purchaser="
+                            f"{quote(purchaser, safe='')}"
+                        ),
+                    },
+                ],
             },
         ],
     }
@@ -252,12 +263,23 @@ def build_order_summary_card(purchaser: str, rows, manage_url: str) -> dict:
             },
             {
                 "tag": "action",
-                "actions": [{
-                    "tag": "button",
-                    "text": {"tag": "plain_text", "content": "管理预警"},
-                    "type": "primary",
-                    "url": manage_url,
-                }],
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "管理通知"},
+                        "type": "primary",
+                        "url": manage_url,
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "完整网页版"},
+                        "type": "default",
+                        "url": (
+                            f"{manage_url}/report?purchaser="
+                            f"{quote(purchaser, safe='')}"
+                        ),
+                    },
+                ],
             },
         ],
     }
@@ -281,12 +303,17 @@ def schedule_slot(buyer, now: datetime) -> str | None:
 
 
 def _active_rows(db, buyer, orders):
-    rows = build_alerts(
-        orders, date.today(), buyer["purchaser"], settings.travel_buffer_days
-    )
     closed = closed_order_numbers(db, buyer["purchaser"])
+    return current_report_rows(orders, buyer["purchaser"], closed)
+
+
+def current_report_rows(orders, purchaser: str, closed: set[str] | None = None):
+    closed = closed or set()
     return [
-        row for row in rows
+        row
+        for row in build_alerts(
+            orders, business_today(), purchaser, settings.travel_buffer_days
+        )
         if row.order.order_no not in closed and not row.order.is_received
     ]
 
@@ -375,7 +402,7 @@ async def run_check() -> dict:
 
 
 async def run_scheduled_checks(now: datetime | None = None) -> dict:
-    current = now or datetime.now()
+    current = now or business_now()
     db = connect(settings.database_path)
     try:
         due_buyers = []
@@ -495,13 +522,7 @@ async def send_manager_report(
     messages = rows_count = order_count = buyers_count = 0
     manage_url = f"{settings.app_base_url.rstrip('/')}/subscribe/{token}"
     for name in selected:
-        rows = _current_in_transit([
-            row
-            for row in build_alerts(
-                orders, date.today(), name, settings.travel_buffer_days
-            )
-            if not row.order.is_received
-        ])
+        rows = _current_in_transit(current_report_rows(orders, name))
         if not rows:
             continue
         buyers_count += 1
