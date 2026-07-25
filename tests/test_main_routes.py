@@ -84,6 +84,10 @@ class MainRouteTests(unittest.TestCase):
         )
         self.assertIn('@app.get("/subscribe/{token}/report"', source)
         self.assertIn("完整在途数据", source)
+        self.assertIn("<span>商品名称</span>", source)
+        self.assertIn("<span>在途占比</span>", source)
+        self.assertNotIn("SKU：", source)
+        self.assertNotIn('class="items"', source)
         self.assertIn("填入北京时间（下一分钟）", source)
         self.assertIn('timeZone:"Asia/Shanghai"', source)
 

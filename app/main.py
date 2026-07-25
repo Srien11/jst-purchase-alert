@@ -516,15 +516,13 @@ def full_report_page(token: str, buyer, selected: list[str], orders) -> HTMLResp
             suppliers = "、".join(
                 sorted({order.supplier for order in orders_in_group if order.supplier})
             )
-            items = "".join(
-                f"""<div class="item">
-                <strong>{escape(order.item_name or order.sku or "未命名商品")}</strong>
-                <span>SKU：{escape(order.sku or "—")}</span>
-                <span>交期：{order.delivery_date}　剩余：{row.effective_days_left} 天</span>
-                <span>订购 {order.ordered_qty}　已入库 {order.received_qty}　在途 {order.pending_qty}</span>
-                </div>"""
-                for row, order in (
-                    (row, row.order) for row in order_rows
+            item_names = "、".join(
+                sorted(
+                    {
+                        order.item_name
+                        for order in orders_in_group
+                        if order.item_name
+                    }
                 )
             )
             level_class = {"红": "red", "黄": "yellow", "绿": "green"}[urgent.level]
@@ -534,18 +532,21 @@ def full_report_page(token: str, buyer, selected: list[str], orders) -> HTMLResp
                 <h3>{escape(order_no)}</h3></div>
                 <span class="badge {level_class}">{urgent.level} · {urgent.effective_days_left} 天</span></div>
                 <div class="summary-grid">
+                <div class="wide"><span>商品名称</span><strong>{escape(item_names or "未命名商品")}</strong></div>
                 <div><span>供应商</span><strong>{escape(suppliers or "—")}</strong></div>
                 <div><span>最早交期</span><strong>{min(order.delivery_date for order in orders_in_group)}</strong></div>
+                <div><span>最短剩余</span><strong>{urgent.effective_days_left} 天</strong></div>
+                <div><span>商品数</span><strong>{len(orders_in_group)}</strong></div>
                 <div><span>订购</span><strong>{ordered_qty}</strong></div>
                 <div><span>已入库</span><strong>{received_qty}</strong></div>
                 <div><span>在途</span><strong>{pending_qty}</strong></div>
                 <div><span>在途占比</span><strong>{in_transit_percentage(pending_qty, ordered_qty)}</strong></div>
-                </div><div class="items">{items}</div></article>"""
+                </div></article>"""
             )
         content = "".join(cards) or '<div class="empty-report">当前没有 0–15 天在途数据</div>'
         sections.append(
             f"""<section class="buyer-section"><h2>{escape(name)}</h2>
-            <p>{len(grouped)} 张采购单，{len(rows)} 条 SKU 明细</p>{content}</section>"""
+            <p>{len(grouped)} 张采购单，{len(rows)} 条商品记录</p>{content}</section>"""
         )
     back = public_url(f"/subscribe/{token}")
     return HTMLResponse(
@@ -561,18 +562,17 @@ def full_report_page(token: str, buyer, selected: list[str], orders) -> HTMLResp
         .order-card{{background:#fff;border-radius:20px;padding:20px;margin:14px 0;
         box-shadow:0 10px 35px #29476812;overflow-wrap:anywhere}}
         .order-head{{display:flex;justify-content:space-between;align-items:center;gap:12px}}
-        small,.summary-grid span,.item span{{display:block;color:#718096;font-size:12px}}
+        small,.summary-grid span{{display:block;color:#718096;font-size:12px}}
         h3{{margin:3px 0 0}}.badge{{padding:7px 10px;border-radius:99px;font-weight:700;white-space:nowrap}}
         .red{{background:#fff0f0;color:#d9363e}}.yellow{{background:#fff8df;color:#9a6900}}
         .green{{background:#eaf8ef;color:#17824b}}
         .summary-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));
         gap:12px;margin:18px 0;padding:15px;background:#f7f9fc;border-radius:14px}}
         .summary-grid strong{{display:block;margin-top:4px}}
-        .items{{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px}}
-        .item{{border:1px solid #e7ebf1;border-radius:13px;padding:13px;line-height:1.65}}
-        .item strong{{display:block;margin-bottom:4px}}.empty-report{{background:#fff;padding:24px;border-radius:16px;color:#718096}}
+        .summary-grid .wide{{grid-column:1/-1;line-height:1.55}}
+        .empty-report{{background:#fff;padding:24px;border-radius:16px;color:#718096}}
         @media(max-width:560px){{main{{margin-top:18px}}.top{{align-items:flex-start;flex-direction:column}}
-        .top a{{width:100%;text-align:center}}.order-card{{padding:16px}}.items{{grid-template-columns:1fr}}}}
+        .top a{{width:100%;text-align:center}}.order-card{{padding:16px}}}}
         </style></head><body><main><div class="top"><div><small>采购交期预警</small>
         <h1>完整在途数据</h1></div><a href="{back}">返回通知中心</a></div>
         {''.join(sections)}</main></body></html>""",
