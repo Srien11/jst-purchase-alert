@@ -39,12 +39,17 @@ class MainRouteTests(unittest.TestCase):
         source = (Path(__file__).parents[1] / "app" / "main.py").read_text(
             encoding="utf-8"
         )
-        self.assertIn("authorized = buyer_by_open_id(db, open_id)", source)
+        self.assertIn("purchaser = authorized_login_identity(name)", source)
+        self.assertNotIn("buyer_by_open_id(db, open_id)", source)
+        self.assertIn(
+            'if buyer and is_authorized_purchaser(buyer["purchaser"]):',
+            source,
+        )
         self.assertIn("当前飞书账号尚未授权", source)
         self.assertNotIn('name="purchaser" required', source)
         self.assertNotIn('@app.post("/join/confirm"', source)
         self.assertNotIn("if is_procurement_manager(name):", source)
-        self.assertIn('"刘智博&木耳"', source)
+        self.assertIn("authorized_login_identity", source)
 
     def test_bound_browser_skips_repeated_oauth(self):
         source = (Path(__file__).parents[1] / "app" / "main.py").read_text(
@@ -56,6 +61,22 @@ class MainRouteTests(unittest.TestCase):
         self.assertIn('"purchase_alert_token"', source)
         self.assertIn("httponly=True", source)
         self.assertIn("secure=True", source)
+
+    def test_scheduled_push_sends_full_current_range_not_warning_days_only(self):
+        source = (Path(__file__).parents[1] / "app" / "service.py").read_text(
+            encoding="utf-8"
+        )
+        scheduled = source[
+            source.index("async def run_scheduled_checks"):
+            source.index("async def send_manual_report")
+        ]
+        self.assertIn(
+            "_current_in_transit(_active_rows(db, buyer, orders))",
+            scheduled,
+        )
+        self.assertIn("_send_order_summaries(buyer, rows)", scheduled)
+        self.assertNotIn("_run_for_buyers(personal_buyers", scheduled)
+        self.assertIn("completed_buyers", scheduled)
 
 
 if __name__ == "__main__":
