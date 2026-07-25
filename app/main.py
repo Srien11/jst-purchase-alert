@@ -503,7 +503,7 @@ cursor:pointer}} button.danger{{background:#fff0f0;color:#d93f46}} button.second
  button.small{{padding:8px 13px}} form{{margin:0}} .help{{font-size:13px;color:#7a8799;line-height:1.7}}
  h2{{font-size:18px;margin:0 0 14px}} .close-form{{display:flex;gap:10px;margin:12px 0 18px}}
  input,select{{min-width:0;flex:1;border:1px solid #dce3ed;border-radius:12px;padding:12px 14px;font-size:15px;background:white}}
- .schedule-form{{display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:10px;align-items:end}}
+ .schedule-form{{display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:10px;align-items:start}}
  .manager-schedule-form{{grid-template-columns:1.2fr 1fr 1fr 1fr auto}}
  .manager-form,.manual-form{{display:grid;grid-template-columns:1fr;gap:10px}}
  .range-fields{{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);

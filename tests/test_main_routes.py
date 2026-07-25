@@ -90,6 +90,7 @@ class MainRouteTests(unittest.TestCase):
         self.assertIn('content:attr(data-label)', source)
         self.assertIn("填入北京时间（下一分钟）", source)
         self.assertIn('timeZone:"Asia/Shanghai"', source)
+        self.assertIn("gap:10px;align-items:start", source)
         self.assertIn("逾期未完成范围", source)
         self.assertIn("本次发送范围", source)
         self.assertNotIn('id="report-overdue-preset"', source)
