@@ -505,7 +505,7 @@ def full_report_page(token: str, buyer, selected: list[str], orders) -> HTMLResp
         grouped = {}
         for row in rows:
             grouped.setdefault(row.order.order_no, []).append(row)
-        cards = []
+        table_rows = []
         for order_no, order_rows in grouped.items():
             order_rows.sort(key=lambda row: (row.effective_days_left, row.order.sku))
             orders_in_group = [row.order for row in order_rows]
@@ -526,24 +526,31 @@ def full_report_page(token: str, buyer, selected: list[str], orders) -> HTMLResp
                 )
             )
             level_class = {"红": "red", "黄": "yellow", "绿": "green"}[urgent.level]
-            cards.append(
-                f"""<article class="order-card">
-                <div class="order-head"><div><small>采购单</small>
-                <h3>{escape(order_no)}</h3></div>
-                <span class="badge {level_class}">{urgent.level} · {urgent.effective_days_left} 天</span></div>
-                <div class="summary-grid">
-                <div class="wide"><span>商品名称</span><strong>{escape(item_names or "未命名商品")}</strong></div>
-                <div><span>供应商</span><strong>{escape(suppliers or "—")}</strong></div>
-                <div><span>最早交期</span><strong>{min(order.delivery_date for order in orders_in_group)}</strong></div>
-                <div><span>最短剩余</span><strong>{urgent.effective_days_left} 天</strong></div>
-                <div><span>商品数</span><strong>{len(orders_in_group)}</strong></div>
-                <div><span>订购</span><strong>{ordered_qty}</strong></div>
-                <div><span>已入库</span><strong>{received_qty}</strong></div>
-                <div><span>在途</span><strong>{pending_qty}</strong></div>
-                <div><span>在途占比</span><strong>{in_transit_percentage(pending_qty, ordered_qty)}</strong></div>
-                </div></article>"""
+            table_rows.append(
+                f"""<tr>
+                <td data-label="预警"><span class="badge {level_class}">{urgent.level} · {urgent.effective_days_left} 天</span></td>
+                <td data-label="采购单"><strong>{escape(order_no)}</strong></td>
+                <td data-label="商品名称" class="product-cell">{escape(item_names or "未命名商品")}</td>
+                <td data-label="供应商">{escape(suppliers or "—")}</td>
+                <td data-label="最早交期">{min(order.delivery_date for order in orders_in_group)}</td>
+                <td data-label="最短剩余">{urgent.effective_days_left} 天</td>
+                <td data-label="订购">{ordered_qty}</td>
+                <td data-label="已入库">{received_qty}</td>
+                <td data-label="在途">{pending_qty}</td>
+                <td data-label="在途占比"><strong>{in_transit_percentage(pending_qty, ordered_qty)}</strong></td>
+                </tr>"""
             )
-        content = "".join(cards) or '<div class="empty-report">当前没有 0–15 天在途数据</div>'
+        content = (
+            f"""<div class="table-shell"><table>
+            <colgroup><col class="status-col"><col class="order-col"><col class="product-col">
+            <col class="supplier-col"><col class="date-col"><col class="days-col">
+            <col class="qty-col"><col class="qty-col"><col class="qty-col"><col class="ratio-col"></colgroup>
+            <thead><tr><th>预警</th><th>采购单</th><th>商品名称</th><th>供应商</th>
+            <th>最早交期</th><th>最短剩余</th><th>订购</th><th>已入库</th><th>在途</th><th>在途占比</th>
+            </tr></thead><tbody>{''.join(table_rows)}</tbody></table></div>"""
+            if table_rows
+            else '<div class="empty-report">当前没有 0–15 天在途数据</div>'
+        )
         sections.append(
             f"""<section class="buyer-section"><h2>{escape(name)}</h2>
             <p>{len(grouped)} 张采购单，{len(rows)} 条商品记录</p>{content}</section>"""
@@ -555,24 +562,32 @@ def full_report_page(token: str, buyer, selected: list[str], orders) -> HTMLResp
         <title>完整在途数据</title><style>
         *{{box-sizing:border-box}}body{{margin:0;background:#f4f7fb;color:#172033;
         font-family:Inter,"PingFang SC","Microsoft YaHei",sans-serif}}
-        main{{width:min(980px,calc(100% - 24px));margin:28px auto 60px}}
+        main{{width:min(1480px,calc(100% - 24px));margin:28px auto 60px}}
         .top{{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:24px}}
         a{{background:#1677ff;color:#fff;text-decoration:none;padding:11px 16px;border-radius:12px}}
         h1{{margin:0}}.buyer-section{{margin-top:28px}}.buyer-section>p{{color:#718096}}
-        .order-card{{background:#fff;border-radius:20px;padding:20px;margin:14px 0;
-        box-shadow:0 10px 35px #29476812;overflow-wrap:anywhere}}
-        .order-head{{display:flex;justify-content:space-between;align-items:center;gap:12px}}
-        small,.summary-grid span{{display:block;color:#718096;font-size:12px}}
-        h3{{margin:3px 0 0}}.badge{{padding:7px 10px;border-radius:99px;font-weight:700;white-space:nowrap}}
+        small{{display:block;color:#718096;font-size:12px}}
+        .table-shell{{background:#fff;border-radius:18px;box-shadow:0 10px 35px #29476812;overflow:hidden}}
+        table{{width:100%;border-collapse:collapse;table-layout:fixed}}
+        th{{background:#f7f9fc;color:#64748b;font-size:12px;text-align:left;padding:13px 10px;
+        position:sticky;top:0;z-index:1}}
+        td{{padding:14px 10px;border-top:1px solid #edf1f6;font-size:13px;line-height:1.5;
+        vertical-align:middle;overflow-wrap:anywhere}}
+        tbody tr:hover{{background:#f8fbff}}.product-cell{{font-weight:600}}
+        .status-col{{width:8%}}.order-col{{width:12%}}.product-col{{width:22%}}
+        .supplier-col{{width:12%}}.date-col{{width:9%}}.days-col{{width:8%}}
+        .qty-col{{width:7%}}.ratio-col{{width:8%}}
+        .badge{{display:inline-block;padding:6px 9px;border-radius:99px;font-weight:700;white-space:nowrap}}
         .red{{background:#fff0f0;color:#d9363e}}.yellow{{background:#fff8df;color:#9a6900}}
         .green{{background:#eaf8ef;color:#17824b}}
-        .summary-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));
-        gap:12px;margin:18px 0;padding:15px;background:#f7f9fc;border-radius:14px}}
-        .summary-grid strong{{display:block;margin-top:4px}}
-        .summary-grid .wide{{grid-column:1/-1;line-height:1.55}}
         .empty-report{{background:#fff;padding:24px;border-radius:16px;color:#718096}}
-        @media(max-width:560px){{main{{margin-top:18px}}.top{{align-items:flex-start;flex-direction:column}}
-        .top a{{width:100%;text-align:center}}.order-card{{padding:16px}}}}
+        @media(max-width:760px){{main{{margin-top:18px}}.top{{align-items:flex-start;flex-direction:column}}
+        .top a{{width:100%;text-align:center}}.table-shell{{background:transparent;box-shadow:none;overflow:visible}}
+        table,tbody{{display:block}}thead,colgroup{{display:none}}tr{{display:grid;grid-template-columns:1fr 1fr;
+        gap:0;background:#fff;border-radius:16px;margin:12px 0;padding:8px;box-shadow:0 8px 28px #29476812}}
+        td{{display:block;border:0;padding:8px;font-size:14px}}td::before{{content:attr(data-label);
+        display:block;color:#718096;font-size:11px;margin-bottom:3px}}
+        td:nth-child(2),td.product-cell{{grid-column:1/-1}}}}
         </style></head><body><main><div class="top"><div><small>采购交期预警</small>
         <h1>完整在途数据</h1></div><a href="{back}">返回通知中心</a></div>
         {''.join(sections)}</main></body></html>""",
