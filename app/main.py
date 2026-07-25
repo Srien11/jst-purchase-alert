@@ -352,7 +352,7 @@ method="post" action="{public_url(f'/subscribe/{token}/schedule')}">
 <div class="field"><label>频率</label><select id="schedule-frequency" name="frequency">{frequency_options}</select></div>
 <div class="field"><label>推送时间（北京时间）</label>
 <input id="schedule-time" type="time" name="schedule_time" value="{schedule_time}" required>
-<button type="button" class="small secondary now-button" id="use-beijing-now">填入当前北京时间</button>
+<button type="button" class="small secondary now-button" id="use-beijing-now">填入北京时间（下一分钟）</button>
 <div class="help" id="beijing-now"></div></div>
 <div id="weekday-field" class="field"{weekday_style}><label>每周日期</label><select name="weekday">{weekday_options}</select></div>
 <button>保存设置</button></form>
@@ -365,16 +365,18 @@ const beijingClock=document.getElementById("beijing-now");
 const beijingFormatter=new Intl.DateTimeFormat("en-GB",{{
   timeZone:"Asia/Shanghai",hour:"2-digit",minute:"2-digit",hourCycle:"h23"
 }});
-function currentBeijingTime() {{ return beijingFormatter.format(new Date()); }}
+function beijingTimeAfter(minutes=0) {{
+  return beijingFormatter.format(new Date(Date.now()+minutes*60000));
+}}
 function updateBeijingClock() {{
-  beijingClock.textContent=`当前北京时间：${{currentBeijingTime()}}`;
+  beijingClock.textContent=`当前北京时间：${{beijingTimeAfter()}}`;
 }}
 function toggleWeekday() {{
   weekdayField.style.display=frequencySelect.value==="weekly" ? "" : "none";
 }}
 frequencySelect.addEventListener("change", toggleWeekday);
 document.getElementById("use-beijing-now").addEventListener("click",()=>{{
-  scheduleTimeInput.value=currentBeijingTime();
+  scheduleTimeInput.value=beijingTimeAfter(1);
 }});
 toggleWeekday();
 updateBeijingClock();

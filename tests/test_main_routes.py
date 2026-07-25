@@ -84,7 +84,7 @@ class MainRouteTests(unittest.TestCase):
         )
         self.assertIn('@app.get("/subscribe/{token}/report"', source)
         self.assertIn("完整在途数据", source)
-        self.assertIn("填入当前北京时间", source)
+        self.assertIn("填入北京时间（下一分钟）", source)
         self.assertIn('timeZone:"Asia/Shanghai"', source)
 
     def test_legacy_join_review_routes_are_removed(self):
