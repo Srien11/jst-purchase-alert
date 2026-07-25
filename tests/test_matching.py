@@ -13,6 +13,20 @@ class MatchingTests(unittest.TestCase):
             "张三桐乡",
         )
 
+    def test_matches_unique_real_name_or_nickname_alias(self):
+        purchasers = {
+            "张利兰&饺子 桐乡",
+            "张小薇&花卷 桐乡",
+        }
+        self.assertEqual(
+            unique_purchaser_match("饺子", purchasers),
+            "张利兰&饺子 桐乡",
+        )
+        self.assertEqual(
+            unique_purchaser_match("张小薇", purchasers),
+            "张小薇&花卷 桐乡",
+        )
+
     def test_duplicate_normalized_names_require_review(self):
         self.assertIsNone(
             unique_purchaser_match("张三", {"张三", "张三桐乡"})

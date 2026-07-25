@@ -10,7 +10,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 from .config import settings
 from .feishu import oauth_user, send_message
-from .matching import normalize_person_name
+from .matching import normalize_person_name, unique_purchaser_match
 from .review import review_signature, valid_review_signature
 from .service import (
     run_check,
@@ -44,6 +44,15 @@ from .storage import (
 )
 
 PROCUREMENT_MANAGERS = {"吴子杰&茴香", "刘智博&木耳"}
+AUTHORIZED_PURCHASERS = {
+    "夏雨磊&大虾 桐乡",
+    "廖钰&桑葚 桐乡",
+    "张利兰&饺子 桐乡",
+    "张小薇&花卷 桐乡",
+    "朱虹&菱角 桐乡",
+    "钟晓盈&椰子 桐乡",
+}
+AUTHORIZED_USERS = AUTHORIZED_PURCHASERS | PROCUREMENT_MANAGERS
 
 
 def is_procurement_manager(purchaser: str) -> bool:
@@ -173,6 +182,23 @@ async def join_callback(code: str, state: str):
         token = authorized["token"]
         db = connect(settings.database_path)
         try:
+            set_buyer_enabled(db, token, True)
+        finally:
+            db.close()
+        return remember_buyer(
+            RedirectResponse(public_url(f"/subscribe/{token}"), status_code=303),
+            token,
+        )
+    purchaser = unique_purchaser_match(name, AUTHORIZED_USERS)
+    if purchaser:
+        db = connect(settings.database_path)
+        try:
+            token = upsert_buyer(
+                db,
+                purchaser,
+                open_id,
+                is_manager=is_procurement_manager(purchaser),
+            )
             set_buyer_enabled(db, token, True)
         finally:
             db.close()
