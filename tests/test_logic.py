@@ -1,7 +1,7 @@
 import unittest
 from datetime import date, datetime
 from decimal import Decimal
-from app.logic import build_alerts, due_warning, summary
+from app.logic import build_alerts, due_warning, resolve_overdue_days, summary
 from app.models import PurchaseOrder
 from app.service import (
     _current_in_transit,
@@ -80,6 +80,20 @@ class LogicTests(unittest.TestCase):
             {row.order.order_no for row in selected_rows},
             {"OVERDUE-7", "CURRENT"},
         )
+
+    def test_custom_overdue_range_accepts_every_valid_boundary(self):
+        self.assertEqual(resolve_overdue_days(-1, 1), 1)
+        self.assertEqual(resolve_overdue_days(-1, 23), 23)
+        self.assertEqual(resolve_overdue_days(-1, 180), 180)
+        self.assertEqual(resolve_overdue_days(0, 999), 0)
+
+    def test_custom_overdue_range_rejects_invalid_values(self):
+        for value in (0, -1, 181, 999):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    resolve_overdue_days(-1, value)
+        with self.assertRaises(ValueError):
+            resolve_overdue_days(21, 21)
 
     def test_level_boundaries_are_non_overlapping(self):
         rows = build_alerts(

@@ -16,6 +16,7 @@ from .authorization import (
 )
 from .config import settings
 from .feishu import oauth_user, send_message
+from .logic import resolve_overdue_days as parse_overdue_days
 from .review import valid_review_signature
 from .service import (
     current_report_rows,
@@ -42,7 +43,7 @@ from .storage import (
     set_buyer_enabled,
     system_event,
     update_buyer_schedule,
-    update_buyer_overdue_days,
+    update_buyer_manual_overdue_days,
     upsert_buyer,
 )
 
@@ -305,6 +306,31 @@ async def test_feishu(
     return {"ok": True, "message": "测试消息已发送"}
 
 
+def overdue_range_fields(prefix: str, overdue_days: int) -> str:
+    preset = overdue_days if overdue_days in {0, 7, 14, 30, 60} else -1
+    options = "".join(
+        f'<option value="{value}"{" selected" if preset == value else ""}>{label}</option>'
+        for value, label in (
+            (0, "不含逾期"),
+            (7, "最近 7 天"),
+            (14, "最近 14 天"),
+            (30, "最近 30 天"),
+            (60, "最近 60 天"),
+            (-1, "自定义"),
+        )
+    )
+    custom_style = "" if preset == -1 else ' style="display:none"'
+    custom_value = overdue_days if preset == -1 else 30
+    return f"""
+    <div class="range-fields">
+    <div class="field"><label>逾期未完成范围</label>
+    <select id="{prefix}-preset" name="overdue_preset">{options}</select></div>
+    <div id="{prefix}-custom" class="field"{custom_style}>
+    <label>自定义天数（1–180）</label>
+    <input type="number" name="custom_overdue_days" min="1" max="180"
+    value="{custom_value}"></div></div>"""
+
+
 def notification_page(token: str, buyer, closed: list[str]) -> HTMLResponse:
     purchaser = escape(buyer["purchaser"])
     enabled = bool(buyer["enabled"])
@@ -330,37 +356,14 @@ def notification_page(token: str, buyer, closed: list[str]) -> HTMLResponse:
         for value, label in enumerate(("周一", "周二", "周三", "周四", "周五", "周六", "周日"))
     )
     schedule_time = f"{buyer['schedule_hour']:02d}:{buyer['schedule_minute']:02d}"
-    overdue_days = int(buyer["overdue_days"])
-    overdue_preset = overdue_days if overdue_days in {0, 7, 14, 30, 60} else -1
-    overdue_options = "".join(
-        f'<option value="{value}"{" selected" if overdue_preset == value else ""}>{label}</option>'
-        for value, label in (
-            (0, "关闭逾期数据"),
-            (7, "最近 7 天"),
-            (14, "最近 14 天"),
-            (30, "最近 30 天"),
-            (60, "最近 60 天"),
-            (-1, "自定义"),
-        )
+    manual_overdue_days = int(buyer["manual_overdue_days"])
+    schedule_overdue_days = int(buyer["schedule_overdue_days"])
+    manual_range_fields = overdue_range_fields(
+        "manual-overdue", manual_overdue_days
     )
-    overdue_custom_style = "" if overdue_preset == -1 else ' style="display:none"'
-    overdue_panel = f"""
-<details class="card compact"><summary><span>逾期未完成数据</span><strong>{'已关闭' if overdue_days == 0 else f'最近 {overdue_days} 天'}</strong></summary>
-<form class="overdue-form" method="post" action="{public_url(f'/subscribe/{token}/overdue-settings')}">
-<div class="field"><label>查看范围</label><select id="overdue-preset" name="preset">{overdue_options}</select></div>
-<div id="overdue-custom-field" class="field"{overdue_custom_style}><label>自定义天数（1–180）</label>
-<input type="number" name="custom_days" min="1" max="180" value="{overdue_days if overdue_preset == -1 else 30}"></div>
-<button>保存</button></form>
-<p class="help">按预计入库时间判断。保存后用于网页版详情、手动获取和定时推送；选择“关闭”即不包含逾期数据。</p>
-</details>
-<script>
-const overduePreset=document.getElementById("overdue-preset");
-const overdueCustomField=document.getElementById("overdue-custom-field");
-function toggleOverdueCustom() {{
-  overdueCustomField.style.display=overduePreset.value==="-1" ? "" : "none";
-}}
-overduePreset.addEventListener("change",toggleOverdueCustom);toggleOverdueCustom();
-</script>"""
+    schedule_range_fields = overdue_range_fields(
+        "schedule-overdue", schedule_overdue_days
+    )
     order_items = "".join(
         f"""<li><div><strong>{escape(order_no)}</strong><span>已关闭单据预警</span></div>
         <form method="post" action="{public_url(f'/subscribe/{token}/orders/{escape(order_no)}/reopen')}">
@@ -387,8 +390,9 @@ method="post" action="{public_url(f'/subscribe/{token}/schedule')}">
 <button type="button" class="small secondary now-button" id="use-beijing-now">填入北京时间（下一分钟）</button>
 <div class="help" id="beijing-now"></div></div>
 <div id="weekday-field" class="field"{weekday_style}><label>每周日期</label><select name="weekday">{weekday_options}</select></div>
+{schedule_range_fields}
 <button>保存设置</button></form>
-<p class="help">{'负责人定时收到所选采购员或全团队的数据，并采用逾期范围设置。' if buyer['is_manager'] else '时间使用北京时间；逾期范围采用个人设置。'}</p></section>
+<p class="help">此处范围只用于自动推送，与手动获取范围分开保存。</p></section>
 <script>
 const frequencySelect=document.getElementById("schedule-frequency");
 const weekdayField=document.getElementById("weekday-field");
@@ -406,10 +410,18 @@ function updateBeijingClock() {{
 function toggleWeekday() {{
   weekdayField.style.display=frequencySelect.value==="weekly" ? "" : "none";
 }}
+function bindOverdueRange(prefix) {{
+  const preset=document.getElementById(prefix+"-preset");
+  const custom=document.getElementById(prefix+"-custom");
+  if(!preset || !custom) return;
+  const toggle=()=>{{custom.style.display=preset.value==="-1" ? "" : "none";}};
+  preset.addEventListener("change",toggle);toggle();
+}}
 frequencySelect.addEventListener("change", toggleWeekday);
 document.getElementById("use-beijing-now").addEventListener("click",()=>{{
   scheduleTimeInput.value=beijingTimeAfter(1);
 }});
+bindOverdueRange("schedule-overdue");
 toggleWeekday();
 updateBeijingClock();
 setInterval(updateBeijingClock,30000);
@@ -418,9 +430,11 @@ setInterval(updateBeijingClock,30000);
     if not buyer["is_manager"]:
         personal_panels = f"""
 <section class="card"><h2>立即获取在途数据</h2>
-<div class="manual"><p class="help">实时读取你名下尚未全部入库的明细，包含未来 0–15 天及你已开启的逾期范围。</p>
-<form method="post" action="{public_url(f'/subscribe/{token}/fetch-now')}">
-<button onclick="this.disabled=true;this.form.submit()">立即发送给我</button></form></div></section>
+<p class="help">实时读取你名下尚未全部入库的明细。此处范围只用于手动获取，并会为你单独保存。</p>
+<form class="manual-form" method="post" action="{public_url(f'/subscribe/{token}/fetch-now')}">
+{manual_range_fields}
+<button onclick="this.disabled=true;this.form.submit()">保存范围并发送给我</button></form>
+<script>bindOverdueRange("manual-overdue");</script></section>
 <section class="card"><h2>单据通知管理</h2>
 <form class="close-form" method="post" action="{public_url(f'/subscribe/{token}/orders/close')}">
 <input name="order_no" required placeholder="输入采购单号，例如 PO-20260701">
@@ -434,17 +448,13 @@ setInterval(updateBeijingClock,30000);
         manager_panel = f"""
 <section class="card manager-card"><div class="eyebrow">TEAM ACCESS</div>
 <h2>采购团队数据</h2>
-<p class="help">负责人专属权限。可筛选单个采购员，或获取全团队实时在途数据；结果只发送到你的飞书。</p>
+<p class="help">负责人专属权限。手动范围会为你单独保存，与团队自动推送范围互不影响。</p>
 <form class="manager-form" method="post" action="{public_url(f'/subscribe/{token}/manager/fetch-now')}">
-<select id="team-purchaser" name="purchaser">
+<div class="field"><label>查询对象</label><select id="team-purchaser" name="purchaser">
 <option value="*">全部采购员</option><option disabled>正在读取聚水潭人员…</option>
-</select><select name="overdue_days" aria-label="逾期范围">
-<option value="0">不含逾期</option><option value="7">逾期 7 天</option>
-<option value="14">逾期 14 天</option><option value="30">逾期 30 天</option>
-<option value="60">逾期 60 天</option><option value="-1">自定义</option></select>
-<input class="team-overdue-custom" type="number" name="custom_overdue_days"
-min="1" max="180" value="30" aria-label="自定义逾期天数" style="display:none">
-<button onclick="this.disabled=true;this.form.submit()">筛选并发送给我</button>
+</select></div>
+{manual_range_fields}
+<button onclick="this.disabled=true;this.form.submit()">保存范围并发送给我</button>
 </form><p id="team-load-status" class="help"></p></section>
 <script>
 fetch("{public_url(f'/subscribe/{token}/manager/purchasers')}")
@@ -467,11 +477,7 @@ fetch("{public_url(f'/subscribe/{token}/manager/purchasers')}")
 .catch(() => {{
   document.getElementById("team-load-status").textContent="人员读取失败，请刷新重试";
 }});
-const teamRange=document.querySelector('.manager-form select[name="overdue_days"]');
-const teamCustom=document.querySelector(".team-overdue-custom");
-teamRange.addEventListener("change",()=>{{
-  teamCustom.style.display=teamRange.value==="-1" ? "" : "none";
-}});
+bindOverdueRange("manual-overdue");
 </script>"""
     return HTMLResponse(f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
@@ -499,19 +505,21 @@ cursor:pointer}} button.danger{{background:#fff0f0;color:#d93f46}} button.second
  input,select{{min-width:0;flex:1;border:1px solid #dce3ed;border-radius:12px;padding:12px 14px;font-size:15px;background:white}}
  .schedule-form{{display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:10px;align-items:end}}
  .manager-schedule-form{{grid-template-columns:1.2fr 1fr 1fr 1fr auto}}
- .manager-form{{display:grid;grid-template-columns:minmax(0,1fr) 150px;gap:10px}}
- .manager-form button,.team-overdue-custom{{grid-column:1/-1}}
+ .manager-form,.manual-form{{display:grid;grid-template-columns:1fr;gap:10px}}
+ .range-fields{{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+ gap:10px;grid-column:1/-1}}
+ .schedule-form>button,.manager-form>button,.manual-form>button{{justify-self:start}}
  .manager-card{{border:1px solid #d9e9ff;background:linear-gradient(145deg,#fff,#f2f8ff)}}
- details.compact summary{{display:flex;justify-content:space-between;cursor:pointer;align-items:center}}
- details.compact summary strong{{font-size:13px;color:#1769cf}} details.compact[open] summary{{margin-bottom:18px}}
- .overdue-form{{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end}}
- .field label{{display:block;color:#607087;font-size:13px;margin-bottom:6px}} .manual{{display:flex;gap:14px;align-items:center}}
+ .field label{{display:block;color:#607087;font-size:13px;margin-bottom:6px}}
  .now-button{{width:100%;margin-top:7px}}
 ul{{list-style:none;padding:0;margin:0}} li{{display:flex;justify-content:space-between;align-items:center;
 padding:13px 4px;border-top:1px solid #edf0f4}} li span{{display:block;color:#8792a4;font-size:12px;margin-top:4px}}
 .empty{{color:#8b96a8;justify-content:center;padding:22px}} @media(max-width:560px){{.wrap{{margin:20px auto}}
 .card{{padding:20px;border-radius:20px}} .status{{align-items:flex-start;gap:14px;flex-direction:column}}
- .close-form,.manual{{flex-direction:column;align-items:stretch}} .schedule-form,.manager-form,.overdue-form{{grid-template-columns:1fr}} button{{width:100%}}}}
+ .close-form{{flex-direction:column;align-items:stretch}}
+ .schedule-form,.manager-form,.manual-form,.range-fields{{grid-template-columns:1fr}}
+ .schedule-form>button,.manager-form>button,.manual-form>button{{justify-self:stretch}}
+ button{{width:100%}}}}
 </style></head><body><main class="wrap">
 <div class="brand"><div class="logo">◆</div><span>采购交期预警</span></div>
 <section class="card"><div class="eyebrow">NOTIFICATION CENTER</div>
@@ -523,7 +531,6 @@ padding:13px 4px;border-top:1px solid #edf0f4}} li span{{display:block;color:#87
 <p class="help">关闭后，此后再开启前不接收自动推送，系统重启或次日检查也不会自动恢复。
 开启后会按设置时间发送完整 0–15 天数据；当前无在途数据时也会发送确认消息。</p>
 </section>
-{overdue_panel}
 {schedule_panel}
 {manager_panel}
 {personal_panels}</main></body></html>""", headers={
@@ -625,20 +632,11 @@ def full_report_page(
             <p>{len(grouped)} 张采购单，{len(rows)} 条商品记录</p>{content}</section>"""
         )
     back = public_url(f"/subscribe/{token}")
-    purchaser_value = "*" if len(selected) != 1 else selected[0]
-    report_preset = overdue_days if overdue_days in {0, 7, 14, 30, 60} else -1
-    report_options = "".join(
-        f'<option value="{value}"{" selected" if report_preset == value else ""}>{label}</option>'
-        for value, label in (
-            (0, "关闭逾期数据"),
-            (7, "最近 7 天"),
-            (14, "最近 14 天"),
-            (30, "最近 30 天"),
-            (60, "最近 60 天"),
-            (-1, "自定义"),
-        )
+    overdue_range_text = (
+        "不含逾期数据"
+        if overdue_days == 0
+        else f"包含最近 {overdue_days} 天逾期未完成数据"
     )
-    report_custom_style = "" if report_preset == -1 else ' style="display:none"'
     return HTMLResponse(
         f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
         <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -649,11 +647,9 @@ def full_report_page(
         .top{{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:24px}}
         a{{background:#1677ff;color:#fff;text-decoration:none;padding:11px 16px;border-radius:12px}}
         h1{{margin:0}}.buyer-section{{margin-top:28px}}.buyer-section>p{{color:#718096}}
-        .filters{{display:flex;align-items:end;gap:10px;background:#fff;padding:16px;
-        border-radius:16px;box-shadow:0 8px 25px #29476810;margin-bottom:18px}}
-        .filters label{{display:block;color:#718096;font-size:12px;margin-bottom:5px}}
-        .filters input,.filters select{{width:170px;border:1px solid #dce3ed;border-radius:10px;padding:10px 12px;font-size:14px;background:#fff}}
-        .filters button{{border:0;border-radius:10px;background:#1677ff;color:#fff;font-weight:700;padding:11px 18px}}
+        .scope{{display:flex;justify-content:space-between;align-items:center;gap:16px;
+        background:#fff;padding:16px 18px;border-radius:16px;box-shadow:0 8px 25px #29476810;
+        margin-bottom:18px}}.scope strong{{color:#172033}}.scope span{{color:#607087;font-size:14px}}
         small{{display:block;color:#718096;font-size:12px}}
         .table-shell{{background:#fff;border-radius:18px;box-shadow:0 10px 35px #29476812;overflow:hidden}}
         table{{width:100%;border-collapse:collapse;table-layout:fixed}}
@@ -670,8 +666,8 @@ def full_report_page(
         .green{{background:#eaf8ef;color:#17824b}}
         .empty-report{{background:#fff;padding:24px;border-radius:16px;color:#718096}}
         @media(max-width:760px){{main{{margin-top:18px}}.top{{align-items:flex-start;flex-direction:column}}
-        .top a{{width:100%;text-align:center}}.filters{{align-items:stretch;flex-direction:column}}
-        .filters input,.filters select,.filters button{{width:100%}}.table-shell{{background:transparent;box-shadow:none;overflow:visible}}
+        .top a{{width:100%;text-align:center}}.scope{{align-items:flex-start;flex-direction:column}}
+        .table-shell{{background:transparent;box-shadow:none;overflow:visible}}
         table,tbody{{display:block}}thead,colgroup{{display:none}}tr{{display:grid;grid-template-columns:1fr 1fr;
         gap:0;background:#fff;border-radius:16px;margin:12px 0;padding:8px;box-shadow:0 8px 28px #29476812}}
         td{{display:block;border:0;padding:8px;font-size:14px}}td::before{{content:attr(data-label);
@@ -679,22 +675,8 @@ def full_report_page(
         td:nth-child(2),td.product-cell{{grid-column:1/-1}}}}
         </style></head><body><main><div class="top"><div><small>采购交期预警</small>
         <h1>完整在途数据</h1></div><a href="{back}">返回通知中心</a></div>
-        <form class="filters" method="get">
-        <input type="hidden" name="purchaser" value="{escape(purchaser_value)}">
-        <div><label>逾期未完成范围</label>
-        <select id="report-overdue-preset" name="overdue_days">{report_options}</select></div>
-        <div id="report-overdue-custom"{report_custom_style}><label>自定义天数（1–180）</label>
-        <input type="number" name="custom_overdue_days" min="1" max="180"
-        value="{overdue_days if report_preset == -1 else 30}"></div>
-        <button>应用筛选</button></form>
-        <script>
-        const reportPreset=document.getElementById("report-overdue-preset");
-        const reportCustom=document.getElementById("report-overdue-custom");
-        function toggleReportCustom(){{
-          reportCustom.style.display=reportPreset.value==="-1" ? "" : "none";
-        }}
-        reportPreset.addEventListener("change",toggleReportCustom);toggleReportCustom();
-        </script>
+        <div class="scope"><strong>本次发送范围</strong>
+        <span>预计入库 0–15 天未完成数据；{overdue_range_text}</span></div>
         {''.join(sections)}</main></body></html>""",
         headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
     )
@@ -704,8 +686,7 @@ def full_report_page(
 def full_report(
     token: str,
     purchaser: str = "*",
-    overdue_days: int | None = None,
-    custom_overdue_days: int = 30,
+    overdue_days: int = 0,
 ):
     db = connect(settings.database_path)
     try:
@@ -716,12 +697,7 @@ def full_report(
         db.close()
     if not buyer:
         raise HTTPException(404, "链接无效")
-    selected_overdue_days = int(buyer["overdue_days"])
-    if overdue_days is not None:
-        selected_overdue_days = (
-            custom_overdue_days if overdue_days == -1 else overdue_days
-        )
-    if selected_overdue_days not in range(0, 181):
+    if overdue_days not in range(0, 181):
         raise HTTPException(400, "逾期范围须为 0–180 天")
     if buyer["is_manager"]:
         if purchaser != "*" and purchaser not in available:
@@ -730,7 +706,7 @@ def full_report(
     else:
         selected = [buyer["purchaser"]]
     return full_report_page(
-        token, buyer, selected, orders, selected_overdue_days
+        token, buyer, selected, orders, overdue_days
     )
 
 
@@ -761,6 +737,13 @@ def toggle_subscription(token: str, action: str):
     return RedirectResponse(public_url(f"/subscribe/{token}"), status_code=303)
 
 
+def resolve_overdue_days(preset: int, custom_days: int) -> int:
+    try:
+        return parse_overdue_days(preset, custom_days)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @app.post("/subscribe/{token}/schedule")
 async def save_schedule(
     token: str,
@@ -768,6 +751,8 @@ async def save_schedule(
     schedule_time: str = Form(...),
     weekday: int = Form(0),
     purchaser: str = Form("*"),
+    overdue_preset: int = Form(0),
+    custom_overdue_days: int = Form(30),
 ):
     if frequency not in {"daily", "weekdays", "weekly"} or weekday not in range(7):
         raise HTTPException(400, "推送频率设置无效")
@@ -778,6 +763,9 @@ async def save_schedule(
         raise HTTPException(400, "推送时间格式无效") from exc
     if hour not in range(24) or minute not in range(60):
         raise HTTPException(400, "推送时间无效")
+    schedule_overdue_days = resolve_overdue_days(
+        overdue_preset, custom_overdue_days
+    )
     db = connect(settings.database_path)
     try:
         buyer = buyer_by_token(db, token)
@@ -798,39 +786,36 @@ async def save_schedule(
     db = connect(settings.database_path)
     try:
         update_buyer_schedule(
-            db, token, frequency, hour, minute, weekday, schedule_purchaser
+            db,
+            token,
+            frequency,
+            hour,
+            minute,
+            weekday,
+            schedule_purchaser,
+            schedule_overdue_days,
         )
     finally:
         db.close()
     return RedirectResponse(public_url(f"/subscribe/{token}"), status_code=303)
 
 
-@app.post("/subscribe/{token}/overdue-settings")
-def save_overdue_settings(
-    token: str,
-    preset: int = Form(...),
-    custom_days: int = Form(30),
-):
-    if preset not in {0, 7, 14, 30, 60, -1}:
-        raise HTTPException(400, "逾期范围设置无效")
-    overdue_days = custom_days if preset == -1 else preset
-    if overdue_days not in range(0, 181):
-        raise HTTPException(400, "自定义逾期范围须为 1–180 天")
-    db = connect(settings.database_path)
-    try:
-        if not buyer_by_token(db, token):
-            raise HTTPException(404, "链接无效")
-        update_buyer_overdue_days(db, token, overdue_days)
-    finally:
-        db.close()
-    return RedirectResponse(public_url(f"/subscribe/{token}"), status_code=303)
-
-
 @app.post("/subscribe/{token}/fetch-now", response_class=HTMLResponse)
-async def fetch_now(token: str):
+async def fetch_now(
+    token: str,
+    overdue_preset: int = Form(0),
+    custom_overdue_days: int = Form(30),
+):
+    manual_overdue_days = resolve_overdue_days(
+        overdue_preset, custom_overdue_days
+    )
     db = connect(settings.database_path)
     try:
         buyer = buyer_by_token(db, token)
+        if buyer:
+            update_buyer_manual_overdue_days(
+                db, token, manual_overdue_days
+            )
     finally:
         db.close()
     if not buyer:
@@ -854,9 +839,12 @@ async def manager_fetch_now(
     background_tasks: BackgroundTasks,
     token: str,
     purchaser: str = Form("*"),
-    overdue_days: int = Form(0),
+    overdue_preset: int = Form(0),
     custom_overdue_days: int = Form(30),
 ):
+    selected_overdue_days = resolve_overdue_days(
+        overdue_preset, custom_overdue_days
+    )
     db = connect(settings.database_path)
     try:
         buyer = buyer_by_token(db, token)
@@ -866,13 +854,13 @@ async def manager_fetch_now(
         raise HTTPException(404, "链接无效")
     if not buyer["is_manager"]:
         raise HTTPException(403, "仅采购部负责人可查看团队数据")
-    if overdue_days not in {0, 7, 14, 30, 60, -1}:
-        raise HTTPException(400, "逾期范围设置无效")
-    selected_overdue_days = (
-        custom_overdue_days if overdue_days == -1 else overdue_days
-    )
-    if selected_overdue_days not in range(0, 181):
-        raise HTTPException(400, "自定义逾期范围须为 1–180 天")
+    db = connect(settings.database_path)
+    try:
+        update_buyer_manual_overdue_days(
+            db, token, selected_overdue_days
+        )
+    finally:
+        db.close()
     background_tasks.add_task(
         send_manager_report, token, purchaser, None, selected_overdue_days
     )

@@ -4,6 +4,15 @@ from .models import AlertRow, PurchaseOrder
 
 MIN_EFFECTIVE_DAYS = 0
 MAX_EFFECTIVE_DAYS = 15
+OVERDUE_PRESETS = {0, 7, 14, 30, 60, -1}
+
+
+def resolve_overdue_days(preset: int, custom_days: int) -> int:
+    if preset not in OVERDUE_PRESETS:
+        raise ValueError("逾期范围设置无效")
+    if preset == -1 and custom_days not in range(1, 181):
+        raise ValueError("自定义逾期范围须为 1–180 天")
+    return custom_days if preset == -1 else preset
 
 
 def classify(order: PurchaseOrder, today: date, travel_buffer_days: int) -> AlertRow:

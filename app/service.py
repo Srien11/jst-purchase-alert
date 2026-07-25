@@ -331,10 +331,15 @@ def schedule_slot(buyer, now: datetime) -> str | None:
     return None if buyer["last_schedule_slot"] == slot else slot
 
 
-def _active_rows(db, buyer, orders):
+def _active_rows(db, buyer, orders, overdue_days: int | None = None):
     closed = closed_order_numbers(db, buyer["purchaser"])
+    selected_overdue_days = (
+        buyer["schedule_overdue_days"]
+        if overdue_days is None
+        else overdue_days
+    )
     return current_report_rows(
-        orders, buyer["purchaser"], closed, buyer["overdue_days"]
+        orders, buyer["purchaser"], closed, selected_overdue_days
     )
 
 
@@ -366,29 +371,38 @@ def _current_in_transit(rows):
     ]
 
 
-async def _send_rows(buyer, rows) -> int:
+async def _send_rows(
+    buyer, rows, overdue_days: int | None = None
+) -> int:
     manage_url = f"{settings.app_base_url.rstrip('/')}/subscribe/{buyer['token']}"
+    selected_overdue_days = (
+        buyer["schedule_overdue_days"]
+        if overdue_days is None
+        else overdue_days
+    )
     messages = 0
     for start in range(0, len(rows), CARD_TABLE_ROW_LIMIT):
         chunk = rows[start:start + CARD_TABLE_ROW_LIMIT]
         await send_card(
             buyer["feishu_open_id"],
             build_report_card(
-                buyer["purchaser"], chunk, manage_url, buyer["overdue_days"]
+                buyer["purchaser"], chunk, manage_url, selected_overdue_days
             ),
         )
         messages += 1
     return messages
 
 
-async def _send_order_summaries(buyer, rows) -> int:
+async def _send_order_summaries(
+    buyer, rows, overdue_days: int
+) -> int:
     manage_url = f"{settings.app_base_url.rstrip('/')}/subscribe/{buyer['token']}"
     return await _send_order_summaries_to(
         buyer["feishu_open_id"],
         buyer["purchaser"],
         rows,
         manage_url,
-        buyer["overdue_days"],
+        overdue_days,
     )
 
 
@@ -480,11 +494,15 @@ async def run_scheduled_checks(now: datetime | None = None) -> dict:
         try:
             db = connect(settings.database_path)
             try:
-                rows = _active_rows(db, buyer, orders)
+                rows = _active_rows(
+                    db, buyer, orders, buyer["schedule_overdue_days"]
+                )
             finally:
                 db.close()
             if rows:
-                messages = await _send_order_summaries(buyer, rows)
+                messages = await _send_order_summaries(
+                    buyer, rows, buyer["schedule_overdue_days"]
+                )
             else:
                 await send_message(
                     buyer["feishu_open_id"],
@@ -504,7 +522,10 @@ async def run_scheduled_checks(now: datetime | None = None) -> dict:
     for manager in manager_buyers:
         try:
             manager_result = await send_manager_report(
-                manager["token"], manager["schedule_purchaser"], orders=orders
+                manager["token"],
+                manager["schedule_purchaser"],
+                orders=orders,
+                overdue_days=manager["schedule_overdue_days"],
             )
             result["buyers"] += manager_result["buyers"]
             result["messages"] += manager_result["messages"]
@@ -532,7 +553,8 @@ async def send_manual_report(token: str) -> dict:
         if not row or not is_authorized_purchaser(row["purchaser"]):
             raise KeyError(token)
         buyer = dict(row)
-        rows = _active_rows(db, buyer, orders)
+        selected_overdue_days = buyer["manual_overdue_days"]
+        rows = _active_rows(db, buyer, orders, selected_overdue_days)
     finally:
         db.close()
     if not rows:
@@ -542,7 +564,9 @@ async def send_manual_report(token: str) -> dict:
             "当前没有未全部入库的在途采购明细。",
         )
         return {"messages": 1, "rows": 0, "orders": 0}
-    messages = await _send_order_summaries(buyer, rows)
+    messages = await _send_order_summaries(
+        buyer, rows, selected_overdue_days
+    )
     return {
         "messages": messages,
         "rows": len(rows),
@@ -575,7 +599,9 @@ async def send_manager_report(
         raise KeyError(purchaser)
     selected = available if purchaser == "*" else [purchaser]
     selected_overdue_days = (
-        manager["overdue_days"] if overdue_days is None else max(0, overdue_days)
+        manager["schedule_overdue_days"]
+        if overdue_days is None
+        else max(0, overdue_days)
     )
     messages = rows_count = order_count = buyers_count = 0
     manage_url = f"{settings.app_base_url.rstrip('/')}/subscribe/{token}"

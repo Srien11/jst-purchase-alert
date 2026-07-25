@@ -30,7 +30,7 @@ class MainRouteTests(unittest.TestCase):
         self.assertIn('id="incremental-order-cache"', source)
         self.assertIn('id="full-order-cache"', source)
         self.assertIn('id="schedule-purchaser"', source)
-        self.assertIn("负责人定时收到所选采购员或全团队", source)
+        self.assertIn("团队定时推送", source)
         self.assertIn(
             'frequencySelect.value==="weekly" ? "" : "none"', source
         )
@@ -70,8 +70,8 @@ class MainRouteTests(unittest.TestCase):
             source.index("async def run_scheduled_checks"):
             source.index("async def send_manual_report")
         ]
-        self.assertIn("_active_rows(db, buyer, orders)", scheduled)
-        self.assertIn("_send_order_summaries(buyer, rows)", scheduled)
+        self.assertIn('buyer["schedule_overdue_days"]', scheduled)
+        self.assertIn("_send_order_summaries(", scheduled)
         self.assertNotIn("_run_for_buyers(personal_buyers", scheduled)
         self.assertIn("completed_buyers", scheduled)
 
@@ -90,9 +90,37 @@ class MainRouteTests(unittest.TestCase):
         self.assertIn('content:attr(data-label)', source)
         self.assertIn("填入北京时间（下一分钟）", source)
         self.assertIn('timeZone:"Asia/Shanghai"', source)
-        self.assertIn('name="overdue_days"', source)
         self.assertIn("逾期未完成范围", source)
-        self.assertIn("逾期未完成数据", source)
+        self.assertIn("本次发送范围", source)
+        self.assertNotIn('id="report-overdue-preset"', source)
+        self.assertNotIn("应用筛选", source)
+
+    def test_manual_and_schedule_overdue_ranges_are_separate_and_saved(self):
+        main_source = (
+            Path(__file__).parents[1] / "app" / "main.py"
+        ).read_text(encoding="utf-8")
+        service_source = (
+            Path(__file__).parents[1] / "app" / "service.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'overdue_range_fields(\n        "manual-overdue"', main_source
+        )
+        self.assertIn(
+            'overdue_range_fields(\n        "schedule-overdue"', main_source
+        )
+        self.assertIn(
+            "update_buyer_manual_overdue_days", main_source
+        )
+        self.assertIn(
+            "schedule_overdue_days = resolve_overdue_days", main_source
+        )
+        self.assertNotIn("/overdue-settings", main_source)
+        manual = service_source[
+            service_source.index("async def send_manual_report"):
+            service_source.index("async def send_manager_report")
+        ]
+        self.assertIn('buyer["manual_overdue_days"]', manual)
+        self.assertIn('manager["schedule_overdue_days"]', service_source)
 
     def test_legacy_join_review_routes_are_removed(self):
         source = (Path(__file__).parents[1] / "app" / "main.py").read_text(

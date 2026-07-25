@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import sqlite3
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -22,7 +23,7 @@ from app.storage import (
     set_buyer_enabled,
     system_event,
     update_buyer_schedule,
-    update_buyer_overdue_days,
+    update_buyer_manual_overdue_days,
     upsert_buyer,
 )
 
@@ -138,7 +139,7 @@ class StorageTests(unittest.TestCase):
                 self.assertEqual(buyer["schedule_frequency"], "daily")
                 self.assertEqual((buyer["schedule_hour"], buyer["schedule_minute"]), (9, 0))
                 update_buyer_schedule(
-                    db, token, "weekly", 14, 30, 4, "采购员乙"
+                    db, token, "weekly", 14, 30, 4, "采购员乙", 60
                 )
                 buyer = buyer_by_token(db, token)
                 self.assertEqual(
@@ -148,8 +149,9 @@ class StorageTests(unittest.TestCase):
                         buyer["schedule_minute"],
                         buyer["schedule_weekday"],
                         buyer["schedule_purchaser"],
+                        buyer["schedule_overdue_days"],
                     ),
-                    ("weekly", 14, 30, 4, "采购员乙"),
+                    ("weekly", 14, 30, 4, "采购员乙", 60),
                 )
                 mark_schedule_slot(db, token, "2026-07-24T14:30")
                 self.assertEqual(
@@ -159,18 +161,70 @@ class StorageTests(unittest.TestCase):
             finally:
                 db.close()
 
-    def test_overdue_range_defaults_to_off_and_persists_per_buyer(self):
+    def test_manual_and_schedule_ranges_persist_independently_per_buyer(self):
         with tempfile.TemporaryDirectory() as tmp:
-            db = connect(str(Path(tmp) / "overdue.db"))
+            path = str(Path(tmp) / "overdue.db")
+            db = connect(path)
             try:
                 first = upsert_buyer(db, "采购员甲", "ou_a")
                 second = upsert_buyer(db, "采购员乙", "ou_b")
-                self.assertEqual(buyer_by_token(db, first)["overdue_days"], 0)
-                update_buyer_overdue_days(db, first, 14)
-                self.assertEqual(buyer_by_token(db, first)["overdue_days"], 14)
-                self.assertEqual(buyer_by_token(db, second)["overdue_days"], 0)
+                first_buyer = buyer_by_token(db, first)
+                self.assertEqual(first_buyer["manual_overdue_days"], 0)
+                self.assertEqual(first_buyer["schedule_overdue_days"], 0)
+                update_buyer_manual_overdue_days(db, first, 23)
+                update_buyer_schedule(
+                    db, first, "daily", 9, 0, 0, "*", 60
+                )
+                first_buyer = buyer_by_token(db, first)
+                second_buyer = buyer_by_token(db, second)
+                self.assertEqual(first_buyer["manual_overdue_days"], 23)
+                self.assertEqual(first_buyer["schedule_overdue_days"], 60)
+                self.assertEqual(second_buyer["manual_overdue_days"], 0)
+                self.assertEqual(second_buyer["schedule_overdue_days"], 0)
             finally:
                 db.close()
+            reopened = connect(path)
+            try:
+                self.assertEqual(
+                    buyer_by_token(reopened, first)["manual_overdue_days"], 23
+                )
+                self.assertEqual(
+                    buyer_by_token(reopened, first)["schedule_overdue_days"], 60
+                )
+            finally:
+                reopened.close()
+
+    def test_legacy_overdue_range_is_copied_to_both_new_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "legacy-overdue.db")
+            legacy = sqlite3.connect(path)
+            try:
+                legacy.execute(
+                    """CREATE TABLE buyers (
+                       purchaser TEXT PRIMARY KEY,
+                       token TEXT UNIQUE NOT NULL,
+                       feishu_open_id TEXT NOT NULL,
+                       enabled INTEGER NOT NULL DEFAULT 0,
+                       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                       overdue_days INTEGER NOT NULL DEFAULT 0
+                    )"""
+                )
+                legacy.execute(
+                    """INSERT INTO buyers(
+                       purchaser,token,feishu_open_id,overdue_days
+                    ) VALUES(?,?,?,?)""",
+                    ("采购员甲", "legacy-token", "ou_a", 14),
+                )
+                legacy.commit()
+            finally:
+                legacy.close()
+            migrated = connect(path)
+            try:
+                buyer = buyer_by_token(migrated, "legacy-token")
+                self.assertEqual(buyer["manual_overdue_days"], 14)
+                self.assertEqual(buyer["schedule_overdue_days"], 14)
+            finally:
+                migrated.close()
 
 
 if __name__ == "__main__":
