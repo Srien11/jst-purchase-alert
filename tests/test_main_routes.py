@@ -78,6 +78,22 @@ class MainRouteTests(unittest.TestCase):
         self.assertNotIn("_run_for_buyers(personal_buyers", scheduled)
         self.assertIn("completed_buyers", scheduled)
 
+    def test_full_web_report_and_beijing_time_controls_exist(self):
+        source = (Path(__file__).parents[1] / "app" / "main.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('@app.get("/subscribe/{token}/report"', source)
+        self.assertIn("完整在途数据", source)
+        self.assertIn("填入当前北京时间", source)
+        self.assertIn('timeZone:"Asia/Shanghai"', source)
+
+    def test_legacy_join_review_routes_are_removed(self):
+        source = (Path(__file__).parents[1] / "app" / "main.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("/admin/join-requests", source)
+        self.assertNotIn("/admin/review/{request_id}", source)
+
 
 if __name__ == "__main__":
     unittest.main()

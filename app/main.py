@@ -16,8 +16,10 @@ from .authorization import (
 )
 from .config import settings
 from .feishu import oauth_user, send_message
-from .review import review_signature, valid_review_signature
+from .review import valid_review_signature
 from .service import (
+    current_report_rows,
+    in_transit_percentage,
     run_check,
     run_scheduled_checks,
     refresh_order_cache,
@@ -27,6 +29,7 @@ from .service import (
 from .storage import (
     active_buyers as stored_active_buyers,
     buyer_by_token as stored_buyer_by_token,
+    cached_orders,
     cached_purchasers,
     claim_system_event,
     close_alert,
@@ -34,12 +37,7 @@ from .storage import (
     connect,
     consume_oauth_state,
     create_oauth_state,
-    enable_by_token,
     finish_system_event,
-    approve_join_request,
-    join_request_by_id,
-    pending_join_requests,
-    reject_join_request,
     reopen_alert,
     set_buyer_enabled,
     system_event,
@@ -216,94 +214,6 @@ def add_buyer(body: BuyerInput, x_admin_token: str | None = Header(None)):
     return {"invite_url": f"{settings.app_base_url.rstrip('/')}/subscribe/{token}"}
 
 
-@app.get("/admin/join-requests")
-def list_join_requests(x_admin_token: str | None = Header(None)):
-    require_admin(x_admin_token)
-    db = connect(settings.database_path)
-    try:
-        return [dict(row) for row in pending_join_requests(db)]
-    finally:
-        db.close()
-
-
-@app.post("/admin/join-requests/{request_id}/approve")
-def approve_join(request_id: int, x_admin_token: str | None = Header(None)):
-    require_admin(x_admin_token)
-    db = connect(settings.database_path)
-    try:
-        token = approve_join_request(db, request_id)
-    finally:
-        db.close()
-    if not token:
-        raise HTTPException(404, "待审核申请不存在")
-    return {"ok": True, "manage_url": f"{settings.app_base_url}/subscribe/{token}"}
-
-
-@app.get("/admin/review/{request_id}", response_class=HTMLResponse)
-def review_join_request(request_id: int, sig: str):
-    if not valid_review_signature(request_id, sig, settings.app_admin_token):
-        raise HTTPException(403, "审核链接无效")
-    db = connect(settings.database_path)
-    try:
-        request = join_request_by_id(db, request_id)
-    finally:
-        db.close()
-    if not request:
-        raise HTTPException(404, "申请不存在")
-    status = escape(request["status"])
-    disabled = " disabled" if status != "pending" else ""
-    approve_url = public_url(f"/admin/review/{request_id}/approve")
-    reject_url = public_url(f"/admin/review/{request_id}/reject")
-    return HTMLResponse(
-        f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>审核采购预警开通</title><style>
-body{{font-family:"PingFang SC","Microsoft YaHei",sans-serif;background:#f4f7fb;color:#172033}}
-.card{{max-width:560px;margin:8vh auto;background:white;border-radius:22px;padding:30px;
-box-shadow:0 18px 60px #29476818}}.row{{padding:12px 0;border-bottom:1px solid #edf1f6}}
-.actions{{display:flex;gap:12px;margin-top:24px}}form{{flex:1}}button{{width:100%;padding:13px;
-border:0;border-radius:12px;color:white;font-weight:700;background:#1677ff}}
-.reject{{background:#e5484d}}button:disabled{{background:#aab4c3}}</style></head>
-<body><main class="card"><h1>开通申请审核</h1>
-<div class="row">申请编号：{request_id}</div>
-<div class="row">飞书姓名：{escape(request["feishu_name"])}</div>
-<div class="row">聚水潭采购员：{escape(request["purchaser"])}</div>
-<div class="row">当前状态：{status}</div><div class="actions">
-<form method="post" action="{approve_url}"><input type="hidden" name="sig" value="{escape(sig)}">
-<button{disabled}>同意开通</button></form>
-<form method="post" action="{reject_url}"><input type="hidden" name="sig" value="{escape(sig)}">
-<button class="reject"{disabled}>拒绝</button></form></div></main></body></html>"""
-    )
-
-
-@app.post("/admin/review/{request_id}/approve", response_class=HTMLResponse)
-def approve_join_from_page(request_id: int, sig: str = Form(...)):
-    if not valid_review_signature(request_id, sig, settings.app_admin_token):
-        raise HTTPException(403, "审核链接无效")
-    db = connect(settings.database_path)
-    try:
-        token = approve_join_request(db, request_id)
-    finally:
-        db.close()
-    if not token:
-        raise HTTPException(409, "申请已处理或不存在")
-    return HTMLResponse("<h2>已同意开通</h2><p>该采购员的预警通知已启用。</p>")
-
-
-@app.post("/admin/review/{request_id}/reject", response_class=HTMLResponse)
-def reject_join_from_page(request_id: int, sig: str = Form(...)):
-    if not valid_review_signature(request_id, sig, settings.app_admin_token):
-        raise HTTPException(403, "审核链接无效")
-    db = connect(settings.database_path)
-    try:
-        rejected = reject_join_request(db, request_id)
-    finally:
-        db.close()
-    if not rejected:
-        raise HTTPException(409, "申请已处理或不存在")
-    return HTMLResponse("<h2>已拒绝申请</h2><p>未给该申请人开通预警。</p>")
-
-
 @app.post("/admin/run")
 async def manual_run(x_admin_token: str | None = Header(None)):
     require_admin(x_admin_token)
@@ -440,18 +350,35 @@ def notification_page(token: str, buyer, closed: list[str]) -> HTMLResponse:
 method="post" action="{public_url(f'/subscribe/{token}/schedule')}">
 {schedule_target}
 <div class="field"><label>频率</label><select id="schedule-frequency" name="frequency">{frequency_options}</select></div>
-<div class="field"><label>推送时间</label><input type="time" name="schedule_time" value="{schedule_time}" required></div>
+<div class="field"><label>推送时间（北京时间）</label>
+<input id="schedule-time" type="time" name="schedule_time" value="{schedule_time}" required>
+<button type="button" class="small secondary now-button" id="use-beijing-now">填入当前北京时间</button>
+<div class="help" id="beijing-now"></div></div>
 <div id="weekday-field" class="field"{weekday_style}><label>每周日期</label><select name="weekday">{weekday_options}</select></div>
 <button>保存设置</button></form>
 <p class="help">{'负责人定时收到所选采购员或全团队的 0–15 天在途数据。' if buyer['is_manager'] else '时间使用北京时间。'}</p></section>
 <script>
 const frequencySelect=document.getElementById("schedule-frequency");
 const weekdayField=document.getElementById("weekday-field");
+const scheduleTimeInput=document.getElementById("schedule-time");
+const beijingClock=document.getElementById("beijing-now");
+const beijingFormatter=new Intl.DateTimeFormat("en-GB",{{
+  timeZone:"Asia/Shanghai",hour:"2-digit",minute:"2-digit",hourCycle:"h23"
+}});
+function currentBeijingTime() {{ return beijingFormatter.format(new Date()); }}
+function updateBeijingClock() {{
+  beijingClock.textContent=`当前北京时间：${{currentBeijingTime()}}`;
+}}
 function toggleWeekday() {{
   weekdayField.style.display=frequencySelect.value==="weekly" ? "" : "none";
 }}
 frequencySelect.addEventListener("change", toggleWeekday);
+document.getElementById("use-beijing-now").addEventListener("click",()=>{{
+  scheduleTimeInput.value=currentBeijingTime();
+}});
 toggleWeekday();
+updateBeijingClock();
+setInterval(updateBeijingClock,30000);
 </script>"""
     personal_panels = ""
     if not buyer["is_manager"]:
@@ -531,6 +458,7 @@ cursor:pointer}} button.danger{{background:#fff0f0;color:#d93f46}} button.second
  .manager-form{{display:grid;grid-template-columns:1fr auto;gap:10px}}
  .manager-card{{border:1px solid #d9e9ff;background:linear-gradient(145deg,#fff,#f2f8ff)}}
  .field label{{display:block;color:#607087;font-size:13px;margin-bottom:6px}} .manual{{display:flex;gap:14px;align-items:center}}
+ .now-button{{width:100%;margin-top:7px}}
 ul{{list-style:none;padding:0;margin:0}} li{{display:flex;justify-content:space-between;align-items:center;
 padding:13px 4px;border-top:1px solid #edf0f4}} li span{{display:block;color:#8792a4;font-size:12px;margin-top:4px}}
 .empty{{color:#8b96a8;justify-content:center;padding:22px}} @media(max-width:560px){{.wrap{{margin:20px auto}}
@@ -544,8 +472,8 @@ padding:13px 4px;border-top:1px solid #edf0f4}} li span{{display:block;color:#87
 <div class="help">显示与推送均按交期直接计算剩余天数：0–6 天红色、7–10 天黄色、11–15 天绿色。</div></div>
 <form method="post" action="{public_url(f'/subscribe/{token}/notifications/{action}')}">
 <button class="{'danger' if enabled else ''}"{action_confirm}>{action_text}</button></form></div>
-<p class="help">关闭后，此后再开启前不接收任何提醒，系统重启或次日检查也不会自动恢复。
-首次开启即表示确认订阅；没有命中预警时不发送飞书消息，节假日照常检查。</p>
+<p class="help">关闭后，此后再开启前不接收自动推送，系统重启或次日检查也不会自动恢复。
+开启后会按设置时间发送完整 0–15 天数据；当前无在途数据时也会发送确认消息。</p>
 </section>
 {schedule_panel}
 {manager_panel}
@@ -553,6 +481,121 @@ padding:13px 4px;border-top:1px solid #edf0f4}} li span{{display:block;color:#87
         "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
         "Pragma": "no-cache",
     })
+
+
+def full_report_page(token: str, buyer, selected: list[str], orders) -> HTMLResponse:
+    sections = []
+    db = connect(settings.database_path)
+    try:
+        personal_closed = (
+            closed_order_numbers(db, buyer["purchaser"])
+            if not buyer["is_manager"]
+            else set()
+        )
+    finally:
+        db.close()
+    for name in selected:
+        rows = current_report_rows(
+            orders,
+            name,
+            personal_closed if name == buyer["purchaser"] else set(),
+        )
+        grouped = {}
+        for row in rows:
+            grouped.setdefault(row.order.order_no, []).append(row)
+        cards = []
+        for order_no, order_rows in grouped.items():
+            order_rows.sort(key=lambda row: (row.effective_days_left, row.order.sku))
+            orders_in_group = [row.order for row in order_rows]
+            urgent = min(order_rows, key=lambda row: row.effective_days_left)
+            ordered_qty = sum(order.ordered_qty for order in orders_in_group)
+            received_qty = sum(order.received_qty for order in orders_in_group)
+            pending_qty = sum(order.pending_qty for order in orders_in_group)
+            suppliers = "、".join(
+                sorted({order.supplier for order in orders_in_group if order.supplier})
+            )
+            items = "".join(
+                f"""<div class="item">
+                <strong>{escape(order.item_name or order.sku or "未命名商品")}</strong>
+                <span>SKU：{escape(order.sku or "—")}</span>
+                <span>交期：{order.delivery_date}　剩余：{row.effective_days_left} 天</span>
+                <span>订购 {order.ordered_qty}　已入库 {order.received_qty}　在途 {order.pending_qty}</span>
+                </div>"""
+                for row, order in (
+                    (row, row.order) for row in order_rows
+                )
+            )
+            level_class = {"红": "red", "黄": "yellow", "绿": "green"}[urgent.level]
+            cards.append(
+                f"""<article class="order-card">
+                <div class="order-head"><div><small>采购单</small>
+                <h3>{escape(order_no)}</h3></div>
+                <span class="badge {level_class}">{urgent.level} · {urgent.effective_days_left} 天</span></div>
+                <div class="summary-grid">
+                <div><span>供应商</span><strong>{escape(suppliers or "—")}</strong></div>
+                <div><span>最早交期</span><strong>{min(order.delivery_date for order in orders_in_group)}</strong></div>
+                <div><span>订购</span><strong>{ordered_qty}</strong></div>
+                <div><span>已入库</span><strong>{received_qty}</strong></div>
+                <div><span>在途</span><strong>{pending_qty}</strong></div>
+                <div><span>在途占比</span><strong>{in_transit_percentage(pending_qty, ordered_qty)}</strong></div>
+                </div><div class="items">{items}</div></article>"""
+            )
+        content = "".join(cards) or '<div class="empty-report">当前没有 0–15 天在途数据</div>'
+        sections.append(
+            f"""<section class="buyer-section"><h2>{escape(name)}</h2>
+            <p>{len(grouped)} 张采购单，{len(rows)} 条 SKU 明细</p>{content}</section>"""
+        )
+    back = public_url(f"/subscribe/{token}")
+    return HTMLResponse(
+        f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+        <meta name="viewport" content="width=device-width,initial-scale=1">
+        <title>完整在途数据</title><style>
+        *{{box-sizing:border-box}}body{{margin:0;background:#f4f7fb;color:#172033;
+        font-family:Inter,"PingFang SC","Microsoft YaHei",sans-serif}}
+        main{{width:min(980px,calc(100% - 24px));margin:28px auto 60px}}
+        .top{{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:24px}}
+        a{{background:#1677ff;color:#fff;text-decoration:none;padding:11px 16px;border-radius:12px}}
+        h1{{margin:0}}.buyer-section{{margin-top:28px}}.buyer-section>p{{color:#718096}}
+        .order-card{{background:#fff;border-radius:20px;padding:20px;margin:14px 0;
+        box-shadow:0 10px 35px #29476812;overflow-wrap:anywhere}}
+        .order-head{{display:flex;justify-content:space-between;align-items:center;gap:12px}}
+        small,.summary-grid span,.item span{{display:block;color:#718096;font-size:12px}}
+        h3{{margin:3px 0 0}}.badge{{padding:7px 10px;border-radius:99px;font-weight:700;white-space:nowrap}}
+        .red{{background:#fff0f0;color:#d9363e}}.yellow{{background:#fff8df;color:#9a6900}}
+        .green{{background:#eaf8ef;color:#17824b}}
+        .summary-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));
+        gap:12px;margin:18px 0;padding:15px;background:#f7f9fc;border-radius:14px}}
+        .summary-grid strong{{display:block;margin-top:4px}}
+        .items{{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px}}
+        .item{{border:1px solid #e7ebf1;border-radius:13px;padding:13px;line-height:1.65}}
+        .item strong{{display:block;margin-bottom:4px}}.empty-report{{background:#fff;padding:24px;border-radius:16px;color:#718096}}
+        @media(max-width:560px){{main{{margin-top:18px}}.top{{align-items:flex-start;flex-direction:column}}
+        .top a{{width:100%;text-align:center}}.order-card{{padding:16px}}.items{{grid-template-columns:1fr}}}}
+        </style></head><body><main><div class="top"><div><small>采购交期预警</small>
+        <h1>完整在途数据</h1></div><a href="{back}">返回通知中心</a></div>
+        {''.join(sections)}</main></body></html>""",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
+    )
+
+
+@app.get("/subscribe/{token}/report", response_class=HTMLResponse)
+def full_report(token: str, purchaser: str = "*"):
+    db = connect(settings.database_path)
+    try:
+        buyer = buyer_by_token(db, token)
+        orders = cached_orders(db)
+        available = cached_purchasers(db)
+    finally:
+        db.close()
+    if not buyer:
+        raise HTTPException(404, "链接无效")
+    if buyer["is_manager"]:
+        if purchaser != "*" and purchaser not in available:
+            raise HTTPException(404, "采购员不存在")
+        selected = available if purchaser == "*" else [purchaser]
+    else:
+        selected = [buyer["purchaser"]]
+    return full_report_page(token, buyer, selected, orders)
 
 
 @app.get("/subscribe/{token}", response_class=HTMLResponse)

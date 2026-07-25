@@ -4,6 +4,7 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from .models import PurchaseOrder
+from .timeutils import business_today
 
 
 def connect(path: str) -> sqlite3.Connection:
@@ -34,20 +35,6 @@ def connect(path: str) -> sqlite3.Connection:
         );
         CREATE TABLE IF NOT EXISTS oauth_states (
           state TEXT PRIMARY KEY,
-          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE TABLE IF NOT EXISTS join_sessions (
-          token TEXT PRIMARY KEY,
-          open_id TEXT NOT NULL,
-          feishu_name TEXT NOT NULL,
-          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE TABLE IF NOT EXISTS join_requests (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          open_id TEXT NOT NULL,
-          feishu_name TEXT NOT NULL,
-          purchaser TEXT NOT NULL,
-          status TEXT NOT NULL DEFAULT 'pending',
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE TABLE IF NOT EXISTS system_events (
@@ -305,7 +292,7 @@ def was_sent(db, order_no: str, purchaser: str, warning_day: int) -> bool:
 def mark_sent(db, order_no: str, purchaser: str, warning_day: int):
     db.execute(
         "INSERT OR IGNORE INTO deliveries VALUES(?,?,?,?)",
-        (order_no, purchaser, warning_day, date.today().isoformat()),
+        (order_no, purchaser, warning_day, business_today().isoformat()),
     )
     db.commit()
 
@@ -326,70 +313,3 @@ def consume_oauth_state(db: sqlite3.Connection, state: str) -> bool:
     db.execute("DELETE FROM oauth_states WHERE state=?", (state,))
     db.commit()
     return row is not None
-
-
-def create_join_session(
-    db: sqlite3.Connection, open_id: str, feishu_name: str
-) -> str:
-    token = secrets.token_urlsafe(24)
-    db.execute(
-        "INSERT INTO join_sessions(token,open_id,feishu_name) VALUES(?,?,?)",
-        (token, open_id, feishu_name),
-    )
-    db.commit()
-    return token
-
-
-def join_session(db: sqlite3.Connection, token: str):
-    return db.execute(
-        """SELECT * FROM join_sessions
-           WHERE token=? AND created_at >= datetime('now','-20 minutes')""",
-        (token,),
-    ).fetchone()
-
-
-def create_join_request(
-    db: sqlite3.Connection, open_id: str, feishu_name: str, purchaser: str
-) -> int:
-    cursor = db.execute(
-        """INSERT INTO join_requests(open_id,feishu_name,purchaser)
-           VALUES(?,?,?)""",
-        (open_id, feishu_name, purchaser),
-    )
-    db.commit()
-    return int(cursor.lastrowid)
-
-
-def pending_join_requests(db: sqlite3.Connection):
-    return db.execute(
-        "SELECT * FROM join_requests WHERE status='pending' ORDER BY created_at"
-    ).fetchall()
-
-
-def join_request_by_id(db: sqlite3.Connection, request_id: int):
-    return db.execute(
-        "SELECT * FROM join_requests WHERE id=?", (request_id,)
-    ).fetchone()
-
-
-def reject_join_request(db: sqlite3.Connection, request_id: int) -> bool:
-    cursor = db.execute(
-        """UPDATE join_requests SET status='rejected'
-           WHERE id=? AND status='pending'""",
-        (request_id,),
-    )
-    db.commit()
-    return cursor.rowcount == 1
-
-
-def approve_join_request(db: sqlite3.Connection, request_id: int) -> str | None:
-    row = db.execute(
-        "SELECT * FROM join_requests WHERE id=? AND status='pending'", (request_id,)
-    ).fetchone()
-    if not row:
-        return None
-    token = upsert_buyer(db, row["purchaser"], row["open_id"])
-    set_buyer_enabled(db, token, True)
-    db.execute("UPDATE join_requests SET status='approved' WHERE id=?", (request_id,))
-    db.commit()
-    return token
