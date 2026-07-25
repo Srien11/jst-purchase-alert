@@ -1,6 +1,9 @@
 import tempfile
 import unittest
+from datetime import date
+from decimal import Decimal
 from pathlib import Path
+from app.models import PurchaseOrder
 from app.storage import (
     close_alert,
     closed_order_numbers,
@@ -8,9 +11,13 @@ from app.storage import (
     active_buyers,
     buyer_by_open_id,
     buyer_by_token,
+    cached_orders,
+    cached_purchasers,
     claim_system_event,
     finish_system_event,
     reopen_alert,
+    replace_order_cache,
+    merge_order_cache,
     mark_schedule_slot,
     set_buyer_enabled,
     system_event,
@@ -20,6 +27,18 @@ from app.storage import (
 
 
 class StorageTests(unittest.TestCase):
+    def order(self, order_no, purchaser, ordered, received):
+        return PurchaseOrder(
+            order_no=order_no,
+            purchaser=purchaser,
+            supplier="供应商",
+            delivery_date=date(2026, 8, 1),
+            ordered_qty=Decimal(ordered),
+            received_qty=Decimal(received),
+            sku=f"SKU-{order_no}",
+            item_name=f"商品-{order_no}",
+        )
+
     def test_close_and_reopen_isolated_by_buyer(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = connect(str(Path(tmp) / "test.db"))
@@ -57,6 +76,27 @@ class StorageTests(unittest.TestCase):
                 self.assertEqual(buyer["token"], token)
                 self.assertEqual(buyer["purchaser"], "采购员甲")
                 self.assertIsNone(buyer_by_open_id(db, "ou_unknown"))
+            finally:
+                db.close()
+
+    def test_order_cache_full_replace_and_incremental_merge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = connect(str(Path(tmp) / "cache.db"))
+            try:
+                first = self.order("PO-1", "采购员甲", "10", "2")
+                replace_order_cache(db, [first])
+                self.assertEqual(cached_purchasers(db), ["采购员甲"])
+                self.assertEqual(cached_orders(db)[0].received_qty, Decimal("2"))
+                changed = self.order("PO-1", "采购员甲", "10", "6")
+                second = self.order("PO-2", "采购员乙", "20", "0")
+                merge_order_cache(db, [changed, second])
+                orders = {order.order_no: order for order in cached_orders(db)}
+                self.assertEqual(orders["PO-1"].received_qty, Decimal("6"))
+                self.assertEqual(cached_purchasers(db), ["采购员乙", "采购员甲"])
+                replace_order_cache(db, [second])
+                self.assertEqual(
+                    [order.order_no for order in cached_orders(db)], ["PO-2"]
+                )
             finally:
                 db.close()
 

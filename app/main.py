@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from html import escape
+import asyncio
 import json
 import httpx
 from urllib.parse import quote
@@ -9,12 +10,12 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 from .config import settings
 from .feishu import oauth_user, send_message
-from .jushuitan import fetch_purchasers
 from .matching import normalize_person_name
 from .review import review_signature, valid_review_signature
 from .service import (
     run_check,
     run_scheduled_checks,
+    refresh_order_cache,
     send_manager_report,
     send_manual_report,
 )
@@ -22,6 +23,7 @@ from .storage import (
     active_buyers,
     buyer_by_open_id,
     buyer_by_token,
+    cached_purchasers,
     claim_system_event,
     close_alert,
     closed_order_numbers,
@@ -66,7 +68,29 @@ async def lifespan(_: FastAPI):
         max_instances=1,
         coalesce=True,
     )
+    scheduler.add_job(
+        refresh_order_cache,
+        "interval",
+        minutes=settings.cache_refresh_minutes,
+        kwargs={"full": False},
+        id="incremental-order-cache",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        refresh_order_cache,
+        "cron",
+        hour=2,
+        minute=30,
+        kwargs={"full": True},
+        id="full-order-cache",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
     scheduler.start()
+    asyncio.create_task(refresh_order_cache(full=True))
     yield
     scheduler.shutdown(wait=False)
 
@@ -568,10 +592,11 @@ async def save_schedule(
         db.close()
     schedule_purchaser = "*"
     if buyer["is_manager"]:
+        db = connect(settings.database_path)
         try:
-            available = await fetch_purchasers()
-        except (httpx.HTTPError, RuntimeError) as exc:
-            raise HTTPException(502, f"采购员列表读取失败：{exc}") from exc
+            available = cached_purchasers(db)
+        finally:
+            db.close()
         if purchaser != "*" and purchaser not in available:
             raise HTTPException(400, "定时推送筛选的采购员不存在")
         schedule_purchaser = purchaser
@@ -645,10 +670,11 @@ async def manager_purchasers(token: str):
         raise HTTPException(404, "链接无效")
     if not buyer["is_manager"]:
         raise HTTPException(403, "仅采购部负责人可查看团队数据")
+    db = connect(settings.database_path)
     try:
-        purchasers = await fetch_purchasers()
-    except (httpx.HTTPError, RuntimeError) as exc:
-        raise HTTPException(502, f"采购员列表读取失败：{exc}") from exc
+        purchasers = cached_purchasers(db)
+    finally:
+        db.close()
     return {"purchasers": purchasers}
 
 

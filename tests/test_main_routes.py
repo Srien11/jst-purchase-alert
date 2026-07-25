@@ -26,7 +26,9 @@ class MainRouteTests(unittest.TestCase):
         self.assertIn(
             '@app.get("/subscribe/{token}/manager/purchasers")', source
         )
-        self.assertIn("purchasers = await fetch_purchasers()", source)
+        self.assertIn("purchasers = cached_purchasers(db)", source)
+        self.assertIn('id="incremental-order-cache"', source)
+        self.assertIn('id="full-order-cache"', source)
         self.assertIn('id="schedule-purchaser"', source)
         self.assertIn("负责人定时收到所选采购员或全团队", source)
         self.assertIn(

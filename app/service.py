@@ -7,15 +7,62 @@ from .logic import MAX_EFFECTIVE_DAYS, MIN_EFFECTIVE_DAYS, build_alerts, due_war
 from .storage import (
     active_buyers,
     buyer_by_token,
+    cached_orders,
     closed_order_numbers,
     connect,
+    merge_order_cache,
     mark_schedule_slot,
     mark_sent,
+    replace_order_cache,
     was_sent,
 )
 
 
 CARD_TABLE_ROW_LIMIT = 50
+_cache_refresh_lock = asyncio.Lock()
+
+
+def in_transit_percentage(pending_qty, ordered_qty) -> str:
+    if not ordered_qty:
+        return "0.0%"
+    return f"{pending_qty / ordered_qty * 100:.1f}%"
+
+
+async def refresh_order_cache(full: bool = False) -> dict:
+    if _cache_refresh_lock.locked():
+        async with _cache_refresh_lock:
+            return {"waited": True}
+    async with _cache_refresh_lock:
+        lookback_days = (
+            settings.jst_purchase_lookback_days
+            if full else settings.jst_incremental_lookback_days
+        )
+        orders = await fetch_orders(lookback_days=lookback_days)
+        db = connect(settings.database_path)
+        try:
+            if full:
+                replace_order_cache(db, orders)
+            else:
+                merge_order_cache(db, orders)
+        finally:
+            db.close()
+        return {"orders": len(orders), "full": full}
+
+
+async def get_cached_orders() -> list:
+    db = connect(settings.database_path)
+    try:
+        orders = cached_orders(db)
+    finally:
+        db.close()
+    if orders:
+        return orders
+    await refresh_order_cache(full=True)
+    db = connect(settings.database_path)
+    try:
+        return cached_orders(db)
+    finally:
+        db.close()
 
 
 def render_report(purchaser: str, rows, manage_url: str) -> str:
@@ -31,7 +78,7 @@ def render_report(purchaser: str, rows, manage_url: str) -> str:
         f"手动关闭/恢复预警：{manage_url}",
         "",
         "【在途明细表】",
-        "等级｜采购单｜供应商｜商品/SKU｜交期｜剩余天数｜在途数量",
+        "等级｜采购单｜供应商｜商品/SKU｜交期｜剩余天数｜在途数量｜在途占比",
         "────────────────────────",
     ]
     for r in rows:
@@ -39,7 +86,8 @@ def render_report(purchaser: str, rows, manage_url: str) -> str:
         lines.append(
             f"{'🔴' if r.level == '红' else '🟡'}｜"
             f"{o.order_no}｜{o.supplier}｜{o.item_name or o.sku}｜"
-            f"{o.delivery_date}｜{r.effective_days_left} 天｜{o.pending_qty}"
+            f"{o.delivery_date}｜{r.effective_days_left} 天｜{o.pending_qty}｜"
+            f"{in_transit_percentage(o.pending_qty, o.ordered_qty)}"
         )
     return "\n".join(lines)
 
@@ -62,6 +110,9 @@ def build_report_card(purchaser: str, rows, manage_url: str) -> dict:
             "delivery_date": str(order.delivery_date),
             "days_left": f"{row.effective_days_left} 天",
             "pending_qty": str(order.pending_qty),
+            "in_transit_percentage": in_transit_percentage(
+                order.pending_qty, order.ordered_qty
+            ),
         })
     return {
         "config": {"wide_screen_mode": True},
@@ -100,6 +151,7 @@ def build_report_card(purchaser: str, rows, manage_url: str) -> dict:
                     {"name": "delivery_date", "display_name": "交期", "data_type": "text", "width": "auto"},
                     {"name": "days_left", "display_name": "剩余天数", "data_type": "text", "width": "auto"},
                     {"name": "pending_qty", "display_name": "在途数量", "data_type": "text", "width": "auto"},
+                    {"name": "in_transit_percentage", "display_name": "在途占比", "data_type": "text", "width": "auto"},
                 ],
                 "rows": table_rows,
             },
@@ -130,6 +182,9 @@ def build_order_summary_card(purchaser: str, rows, manage_url: str) -> dict:
             for order in orders
             if order.item_name or order.sku
         })
+        ordered_qty = sum(order.ordered_qty for order in orders)
+        received_qty = sum(order.received_qty for order in orders)
+        pending_qty = sum(order.pending_qty for order in orders)
         table_rows.append({
             "level": (
                 "🔴 紧急" if most_urgent.level == "红"
@@ -142,9 +197,12 @@ def build_order_summary_card(purchaser: str, rows, manage_url: str) -> dict:
             "sku_count": str(len({order.sku for order in orders})),
             "delivery_date": str(min(order.delivery_date for order in orders)),
             "days_left": f"{most_urgent.effective_days_left} 天",
-            "ordered_qty": str(sum(order.ordered_qty for order in orders)),
-            "received_qty": str(sum(order.received_qty for order in orders)),
-            "pending_qty": str(sum(order.pending_qty for order in orders)),
+            "ordered_qty": str(ordered_qty),
+            "received_qty": str(received_qty),
+            "pending_qty": str(pending_qty),
+            "in_transit_percentage": in_transit_percentage(
+                pending_qty, ordered_qty
+            ),
         })
     table_rows.sort(key=lambda row: (int(row["days_left"].split()[0]), row["order_no"]))
     return {
@@ -184,6 +242,7 @@ def build_order_summary_card(purchaser: str, rows, manage_url: str) -> dict:
                     {"name": "ordered_qty", "display_name": "订购", "data_type": "text", "width": "auto"},
                     {"name": "received_qty", "display_name": "已入库", "data_type": "text", "width": "auto"},
                     {"name": "pending_qty", "display_name": "在途", "data_type": "text", "width": "auto"},
+                    {"name": "in_transit_percentage", "display_name": "在途占比", "data_type": "text", "width": "auto"},
                 ],
                 "rows": table_rows,
             },
@@ -303,7 +362,7 @@ async def run_check() -> dict:
         buyers = [dict(row) for row in active_buyers(db)]
     finally:
         db.close()
-    orders = await fetch_orders()
+    orders = await get_cached_orders()
     return await _run_for_buyers(buyers, orders)
 
 
@@ -323,7 +382,7 @@ async def run_scheduled_checks(now: datetime | None = None) -> dict:
         db.close()
     if not due_buyers:
         return {"buyers": 0, "messages": 0, "orders": 0}
-    orders = await fetch_orders()
+    orders = await get_cached_orders()
     personal_buyers = [buyer for buyer in due_buyers if not buyer["is_manager"]]
     manager_buyers = [buyer for buyer in due_buyers if buyer["is_manager"]]
     result = (
@@ -348,7 +407,7 @@ async def run_scheduled_checks(now: datetime | None = None) -> dict:
 
 
 async def send_manual_report(token: str) -> dict:
-    orders = await fetch_orders()
+    orders = await get_cached_orders()
     db = connect(settings.database_path)
     try:
         row = buyer_by_token(db, token)
@@ -377,7 +436,7 @@ async def send_manager_report(
     token: str, purchaser: str = "*", orders=None
 ) -> dict:
     if orders is None:
-        orders = await fetch_orders()
+        orders = await get_cached_orders()
     db = connect(settings.database_path)
     try:
         row = buyer_by_token(db, token)
