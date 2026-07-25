@@ -71,10 +71,18 @@ def connect(path: str) -> sqlite3.Connection:
         "last_schedule_slot": "TEXT NOT NULL DEFAULT ''",
         "is_manager": "INTEGER NOT NULL DEFAULT 0",
         "schedule_purchaser": "TEXT NOT NULL DEFAULT '*'",
+        "overdue_days": "INTEGER NOT NULL DEFAULT 0",
+        "manual_overdue_days": "INTEGER NOT NULL DEFAULT 0",
+        "schedule_overdue_days": "INTEGER NOT NULL DEFAULT 0",
     }
+    added_overdue_columns = []
     for name, definition in migrations.items():
         if name not in columns:
             db.execute(f"ALTER TABLE buyers ADD COLUMN {name} {definition}")
+            if name in {"manual_overdue_days", "schedule_overdue_days"}:
+                added_overdue_columns.append(name)
+    for name in added_overdue_columns:
+        db.execute(f"UPDATE buyers SET {name}=overdue_days")
     db.commit()
     return db
 
@@ -204,13 +212,33 @@ def update_buyer_schedule(
     minute: int,
     weekday: int,
     purchaser: str = "*",
+    schedule_overdue_days: int = 0,
 ):
     db.execute(
         """UPDATE buyers SET schedule_frequency=?, schedule_hour=?,
            schedule_minute=?, schedule_weekday=?, schedule_purchaser=?,
+           schedule_overdue_days=?,
            last_schedule_slot=''
            WHERE token=?""",
-        (frequency, hour, minute, weekday, purchaser, token),
+        (
+            frequency,
+            hour,
+            minute,
+            weekday,
+            purchaser,
+            schedule_overdue_days,
+            token,
+        ),
+    )
+    db.commit()
+
+
+def update_buyer_manual_overdue_days(
+    db: sqlite3.Connection, token: str, overdue_days: int
+):
+    db.execute(
+        "UPDATE buyers SET manual_overdue_days=? WHERE token=?",
+        (overdue_days, token),
     )
     db.commit()
 
